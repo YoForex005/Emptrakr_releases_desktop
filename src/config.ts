@@ -6,3 +6,4 @@
  */
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:3005/api';
+export const WEB_BASE = import.meta.env.VITE_WEB_BASE ?? 'http://localhost:3000';

@@ -15,7 +15,7 @@ interface LoginPageProps {
     onLogin: (user: { id: string; name: string; email: string }, token: string) => void;
 }
 
-import { API_BASE } from '../config';
+import { API_BASE, WEB_BASE } from '../config';
 
 interface DesktopSessionPayload {
     token: string;
@@ -128,7 +128,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             api.openLogin(code);
         } else {
             window.open(
-                `https://hrms.yoforex.net/login?desktopCode=${encodeURIComponent(code)}&returnTo=desktop`,
+                `${WEB_BASE}/login?desktopCode=${encodeURIComponent(code)}&returnTo=desktop`,
                 '_blank'
             );
         }
@@ -244,7 +244,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                         </button>
 
                         <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 14 }}>
-                            Opens <strong>hrms.yoforex.net/login</strong> in your default browser
+                            Opens <strong>{new URL(WEB_BASE).host}/login</strong> in your default browser
                         </p>
                     </>
                 )}

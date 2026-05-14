@@ -18,7 +18,7 @@
 process.noDeprecation = true; // Hides non-critical node warnings (like url.parse)
 
 const { app, BrowserWindow, ipcMain, powerMonitor, shell } = require('electron');
-const { autoUpdater } = require('electron-updater');
+let autoUpdater = null;
 const axios = require('axios');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -26,6 +26,14 @@ const tracker = require('./tracking/tracker');
 const screenshotScheduler = require('./tracking/screenshotScheduler');
 const wfhScreenMonitor = require('./tracking/wfhScreenMonitor');
 const { URL } = require('url');
+
+function readRuntimeConfig() {
+    try {
+        return require('./runtime-config.json');
+    } catch {
+        return {};
+    }
+}
 
 // Set the app name explicitly for the taskbar and OS integration
 app.setName('YO HRMX');
@@ -55,7 +63,31 @@ if (!gotSingleInstanceLock) {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
-const API_BASE = process.env.API_BASE || 'https://hrmsbackend.yoforex.net/api';
+const runtimeConfig = readRuntimeConfig();
+const API_BASE = process.env.API_BASE || runtimeConfig.API_BASE || 'https://hrmsbackend.yoforex.net/api';
+const WEB_BASE = process.env.WEB_BASE || runtimeConfig.WEB_BASE || (isDev ? 'http://localhost:3000' : 'https://hrms.yoforex.net');
+
+function createNoopAutoUpdater() {
+    return {
+        on: () => {},
+        checkForUpdates: () => Promise.resolve(null),
+        quitAndInstall: () => {},
+        set autoDownload(_value) {},
+        set allowPrerelease(_value) {},
+        set logger(_value) {},
+    };
+}
+
+if (isDev) {
+    autoUpdater = createNoopAutoUpdater();
+} else {
+    try {
+        autoUpdater = require('electron-updater').autoUpdater;
+    } catch (err) {
+        console.warn('[OTA] electron-updater unavailable:', err && err.message ? err.message : err);
+        autoUpdater = createNoopAutoUpdater();
+    }
+}
 
 /**
  * Idle threshold in seconds — mutable so the renderer can push the
@@ -571,7 +603,7 @@ app.whenReady().then(() => {
     // We embed it as ?desktopCode=<uuid> so the website POSTs the session
     // to the backend by that code. The renderer polls the backend every 2s.
     ipcMain.on('open-login', (_event, deviceCode) => {
-        const loginUrl = new URL('https://hrms.yoforex.net/login');
+        const loginUrl = new URL('/login', WEB_BASE);
         loginUrl.searchParams.set('desktopCode', String(deviceCode));
         loginUrl.searchParams.set('returnTo', 'desktop');
         shell.openExternal(loginUrl.toString());
@@ -579,7 +611,7 @@ app.whenReady().then(() => {
     });
 
     ipcMain.on('open-dashboard', () => {
-        shell.openExternal('https://hrms.yoforex.net/dashboard');
+        shell.openExternal(new URL('/dashboard', WEB_BASE).toString());
         console.log('[Auth] Opened browser dashboard');
     });
 

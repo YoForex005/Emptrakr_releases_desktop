@@ -214,7 +214,7 @@ export default function Dashboard({ view, onLogout }: DashboardProps) {
         status, loading, actionLoading, error,
         handleStart, handleBreak, handleStop,
         todayWorked, todayBreakSecs: _todayBreakSecs, todayBreaksCount, todayIdleSecs,
-        expectedWorkSecs, expectedActiveSecs, maxBreaks: _maxBreaks,
+        expectedWorkSecs, expectedActiveSecs, maxBreaks,
         workLocation,
     } = useTimer();
 
@@ -382,13 +382,13 @@ export default function Dashboard({ view, onLogout }: DashboardProps) {
                                 id="btn-break"
                                 className={`btn ${status === 'on_break' ? 'btn-primary' : 'btn-warning'}`}
                                 onClick={handleBreak}
-                                disabled={status === 'stopped' || actionLoading || (status !== 'on_break' && todayBreaksCount >= 10)}
+                                disabled={status === 'stopped' || actionLoading || (status !== 'on_break' && todayBreaksCount >= maxBreaks)}
                                 style={{ whiteSpace: 'nowrap' }}
                             >
                                 {status === 'on_break' ? (
                                     <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>Resume</>
                                 ) : (
-                                    <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>Break{todayBreaksCount >= 10 ? ' (Max)' : ''}</>
+                                    <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>Break{todayBreaksCount >= maxBreaks ? ' (Max)' : ''}</>
                                 )}
                             </button>
 

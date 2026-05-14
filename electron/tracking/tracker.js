@@ -1,10 +1,21 @@
 const { execFile } = require('child_process');
 const axios = require('axios');
+const path = require('path');
+
+function loadRuntimeConfig() {
+    try {
+        return require(path.join(__dirname, '..', 'runtime-config.json'));
+    } catch (_) {
+        return {};
+    }
+}
+
+const runtimeConfig = loadRuntimeConfig();
 
 const TRACKING_INTERVAL_MS = 5000;
 const SYNC_INTERVAL_MS = 5000;  // sync every tracker poll (5s) for near-real-time admin view
 
-const API_BASE = process.env.API_BASE || 'https://hrmsbackend.yoforex.net/api';
+const API_BASE = process.env.API_BASE || runtimeConfig.API_BASE || 'https://hrmsbackend.yoforex.net/api';
 
 const EXCLUDED_PROCESSES = [
     // Core Windows kernel / session daemons — never user visible
@@ -220,6 +231,8 @@ let currentApp = null;
 let lastSeenPids = new Set();
 let lastSyncTime = Date.now();
 let authToken = null;
+let syncBackoffUntil = 0;
+let syncFailureCount = 0;
 
 function normalizeProcessName(processName) {
     if (!processName) return '';
@@ -437,6 +450,7 @@ async function syncDataToBackend(data) {
         console.log('[Tracker] Sync skipped: auth token missing');
         return;
     }
+    if (Date.now() < syncBackoffUntil) return;
 
     console.log('[Tracker] Syncing to backend');
 
@@ -451,6 +465,8 @@ async function syncDataToBackend(data) {
                 }
             }
         );
+        syncFailureCount = 0;
+        syncBackoffUntil = 0;
         console.log('[Tracker] Sync success');
     } catch (err) {
         const status = err?.response?.status;
@@ -458,7 +474,13 @@ async function syncDataToBackend(data) {
             console.log('[Tracker] Sync failed: unauthorized token');
             return;
         }
-        console.log('[Tracker] Sync failed:', err.message);
+        const backendError = err?.response?.data
+            ? JSON.stringify(err.response.data)
+            : err.message;
+        console.log('[Tracker] Sync failed:', backendError);
+        syncFailureCount += 1;
+        const delayMs = Math.min(60_000, 5_000 * syncFailureCount);
+        syncBackoffUntil = Date.now() + delayMs;
     }
 }
 
@@ -475,6 +497,8 @@ function setAuthToken(token) {
 
 function clearAuthToken() {
     authToken = null;
+    syncFailureCount = 0;
+    syncBackoffUntil = 0;
     console.log('[Tracker] Auth token cleared');
 }
 
@@ -493,6 +517,7 @@ function startTracking(mainWindow) {
     if (trackingInterval) return;
 
     console.log('[Tracker] Started polling every', TRACKING_INTERVAL_MS / 1000, 'seconds');
+    console.log('[Tracker] API base:', API_BASE);
 
     recordActiveWindow().then(data => {
         if (data && mainWindow && !mainWindow.isDestroyed()) {

@@ -1,7 +1,17 @@
 const axios = require('axios');
 const os = require('os');
+const path = require('path');
 
-const API_BASE = process.env.API_BASE || 'https://hrmsbackend.yoforex.net/api';
+function readRuntimeConfig() {
+    try {
+        return require(path.join(__dirname, '..', 'runtime-config.json'));
+    } catch {
+        return {};
+    }
+}
+
+const runtimeConfig = readRuntimeConfig();
+const API_BASE = process.env.API_BASE || runtimeConfig.API_BASE || 'https://hrmsbackend.yoforex.net/api';
 
 function getDefaultDeviceId() {
     let username = 'unknown-user';

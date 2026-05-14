@@ -1,5 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
-import { syncUsageData } from '../api/usage';
+import { useEffect, useState } from 'react';
 import type { AppUsageData } from '../api/usage';
 
 // Minimal type for IPC data
@@ -14,11 +13,6 @@ interface IpcTrackerData {
  */
 export function useAppTracker() {
     const [usage, setUsage] = useState<AppUsageData[]>([]);
-    const lastSyncTime = useRef<number>(Date.now());
-
-    // Config: Sync to server every 10 seconds
-    const SYNC_INTERVAL_MS = 10000;
-
 
     useEffect(() => {
         const win = window as any;
@@ -36,14 +30,6 @@ export function useAppTracker() {
             if (!data || !data.usage) return;
 
             setUsage(data.usage);
-
-            // Check if it's time to sync
-            const now = Date.now();
-            if (now - lastSyncTime.current >= SYNC_INTERVAL_MS) {
-                lastSyncTime.current = now;
-                console.log('[useAppTracker] Syncing usage data to backend...', data.usage.length, 'apps/sites recorded.');
-                syncUsageData(data.usage);
-            }
         };
 
         win.electronAPI.onAppTrackerUpdate(handleUpdate);

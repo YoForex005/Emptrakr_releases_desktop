@@ -11,6 +11,7 @@ let timer = null;
 let running = false;
 let tickInFlight = false;
 let screenshotIntervalMs = DEFAULT_SCREENSHOT_INTERVAL_MS;
+let firstCaptureAfterAuth = false;
 
 const deviceId = getDefaultDeviceId();
 
@@ -36,10 +37,13 @@ function scheduleNextTick() {
     clearTimer();
     if (!running) return;
 
+    const delayMs = firstCaptureAfterAuth ? Math.min(10_000, screenshotIntervalMs) : screenshotIntervalMs;
+    firstCaptureAfterAuth = false;
+
     timer = setTimeout(async () => {
         await runCaptureCycle();
         scheduleNextTick();
-    }, screenshotIntervalMs);
+    }, delayMs);
 }
 
 async function runCaptureCycle() {
@@ -52,7 +56,10 @@ async function runCaptureCycle() {
     tickInFlight = true;
     try {
         const status = await getWorkStatus(authToken);
-        if (status !== 'working') return;
+        if (status !== 'working') {
+            console.log(`[Screenshot] Skipping cycle: shift status is '${status || 'unknown'}'`);
+            return;
+        }
 
         const capture = await captureCurrentMonitorPng();
         const payload = {
@@ -101,7 +108,9 @@ function setAuthToken(token) {
     const normalized = token.trim().replace(/^Bearer\s+/i, '');
     authToken = normalized || null;
 
-    // Restart interval timing after login so the first capture aligns with current interval.
+    // Take the first screenshot shortly after login in dev/local testing instead
+    // of waiting a full admin interval before anything appears on the dashboard.
+    firstCaptureAfterAuth = !!authToken;
     if (running) scheduleNextTick();
 }
 

@@ -541,14 +541,10 @@ export function useTimer() {
     void _historyWork;
     void _historyBreakSecs;
 
-    // Break count: use history as ground truth (status API may omit older breaks)
-    const breaksCountFromHistory = history
-        .filter(s => new Date(s.startTime).getTime() >= todayStart)
-        .reduce((acc, s) => acc + s.breaks.length, 0);
-
-    // Optimistic +1 for when user clicked "Take Break" but server hasn't yet responded
-    const hasOptimisticBreak = !!(currentShift?.breaks.some(b => b.id.startsWith('temp-')));
-    const todayBreaksCount = breaksCountFromHistory + (hasOptimisticBreak ? 1 : 0);
+    // Break limit is per shift, so only the current shift's breaks count here.
+    // This lets an admin increase Max Breaks Per Shift and have the button
+    // unlock on the next status poll without old shifts from today blocking it.
+    const todayBreaksCount = currentShift?.breaks.length ?? 0;
 
 
     // ── Active shift contribution (recalculated every second via tick) ──────────
