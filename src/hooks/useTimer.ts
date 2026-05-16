@@ -433,7 +433,18 @@ export function useTimer() {
                 let lastErr: unknown = null;
                 for (let attempt = 1; attempt <= 8; attempt++) {
                     try {
-                        await rolloverShift();
+                        const rolloverResult = await rolloverShift();
+                        if (rolloverResult.shift && typeof rolloverResult.shift === 'object') {
+                            const rolledShift = rolloverResult.shift as HistoryShift;
+                            const hasOpenBreak = rolledShift.breaks.some((breakRow) => !breakRow.endTime);
+                            setCurrentShift(rolledShift);
+                            setStatus(rolloverResult.status === 'on_break' || rolloverResult.status === 'working'
+                                ? rolloverResult.status
+                                : hasOpenBreak ? 'on_break' : 'working');
+                        } else if (rolloverResult.shift === null) {
+                            setCurrentShift(null);
+                            setStatus('stopped');
+                        }
                         console.log(`[Rollover] Backend rollover completed on attempt ${attempt}`);
                         lastErr = null;
                         break;
@@ -624,6 +635,12 @@ export function useTimer() {
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
     const todayStart = startOfToday.getTime();
+    const MAX_DAY_SECS = 24 * 60 * 60;
+    const todayEnd = todayStart + MAX_DAY_SECS * 1000;
+    const maxTodayElapsedSecs = Math.max(
+        0,
+        Math.min(MAX_DAY_SECS, Math.floor((Math.min(Date.now(), todayEnd) - todayStart) / 1000))
+    );
 
     // Completed shifts today (used for historical totals)
     const completedToday = history.filter(
@@ -646,29 +663,33 @@ export function useTimer() {
 
 
     // ── Active shift contribution (recalculated every second via tick) ──────────
-    // The on-screen timer is clamped to the current local calendar day so it
-    // resets to 00:00:00 at midnight even if the shift started yesterday.
-    // A shift continuing past midnight is the same record server-side; only
-    // the displayed elapsed/break/work seconds are clamped to today.
+    // The on-screen counters are hard-clamped to the current local calendar day.
+    // Backend rollover creates a fresh shift at midnight; this cap is the UI
+    // safety net if the app was asleep or the rollover request is still retrying.
     let activeWork = 0;
     let activeBreakSecs = 0;
     let elapsedSecs = 0;
 
     if (currentShift) {
         const nowMs = Date.now();
+        const effectiveNowMs = Math.min(nowMs, todayEnd);
         const shiftStartMs = new Date(currentShift.startTime).getTime();
         const dayClampedStartMs = Math.max(shiftStartMs, todayStart);
-        const totalElapsed = Math.max(0, Math.floor((nowMs - dayClampedStartMs) / 1000));
+        const totalElapsed = Math.min(
+            maxTodayElapsedSecs,
+            Math.max(0, Math.floor((effectiveNowMs - dayClampedStartMs) / 1000))
+        );
 
         activeBreakSecs = currentShift.breaks.reduce((acc, b) => {
             if (!b.startTime) return acc;
             const bStartMs = new Date(b.startTime).getTime();
             const bEndMs = b.endTime ? new Date(b.endTime).getTime() : nowMs;
             const overlapStart = Math.max(bStartMs, todayStart);
-            const overlapEnd = Math.min(bEndMs, nowMs);
+            const overlapEnd = Math.min(bEndMs, effectiveNowMs);
             if (overlapEnd <= overlapStart) return acc;
             return acc + Math.floor((overlapEnd - overlapStart) / 1000);
         }, 0);
+        activeBreakSecs = Math.min(activeBreakSecs, totalElapsed);
 
         activeWork = Math.max(0, totalElapsed - activeBreakSecs);
         elapsedSecs = totalElapsed;
@@ -685,10 +706,10 @@ export function useTimer() {
     // `liveActiveSecs` = seconds since the current idle session started (if any).
     // Together they give a smooth second-by-second idle counter, just like
     // todayWorked / todayBreakSecs are computed on every tick.
-    const liveActiveSecs = idleSessionStartTime
-        ? Math.floor((Date.now() - idleSessionStartTime.getTime()) / 1000)
+    const liveIdleSecs = idleSessionStartTime
+        ? Math.max(0, Math.floor((Math.min(Date.now(), todayEnd) - Math.max(idleSessionStartTime.getTime(), todayStart)) / 1000))
         : 0;
-    const todayIdleSecs = closedIdleSecs + liveActiveSecs;
+    const todayIdleSecs = Math.min(maxTodayElapsedSecs, Math.max(0, closedIdleSecs + liveIdleSecs));
 
     // ── Actions ───────────────────────────────────────────────────────────────
 

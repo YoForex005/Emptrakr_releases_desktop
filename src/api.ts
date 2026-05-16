@@ -136,7 +136,13 @@ export async function rolloverShift() {
         method: 'POST',
         headers: authHeaders(),
     });
-    return handleResponse(res);
+    return handleResponse(res) as Promise<{
+        message: string;
+        rolledOver: boolean;
+        status?: 'working' | 'on_break' | 'stopped';
+        previousShift?: unknown;
+        shift: unknown;
+    }>;
 }
 
 export async function sendHeartbeat() {
