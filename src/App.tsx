@@ -3,12 +3,9 @@ import './index.css';
 import LoginPage from './pages/LoginPage';
 import Dashboard from './pages/Dashboard';
 import Titlebar from './components/Titlebar';
-
-interface User {
-    id: string;
-    name: string;
-    email: string;
-}
+import { getMe } from './api';
+import type { CompanyBrandChangedDetail } from './api';
+import type { User } from './types';
 
 function getSavedUser(): User | null {
     const raw = localStorage.getItem('wf_user');
@@ -21,7 +18,14 @@ function getSavedUser(): User | null {
             typeof parsed.name === 'string' &&
             typeof parsed.email === 'string'
         ) {
-            return { id: parsed.id, name: parsed.name, email: parsed.email };
+            return {
+                id: parsed.id,
+                name: parsed.name,
+                email: parsed.email,
+                companyId: typeof parsed.companyId === 'string' ? parsed.companyId : undefined,
+                companyName: typeof parsed.companyName === 'string' ? parsed.companyName : undefined,
+                companyLogoUrl: typeof parsed.companyLogoUrl === 'string' ? parsed.companyLogoUrl : null,
+            };
         }
         return null;
     } catch {
@@ -115,6 +119,55 @@ function App() {
         }
     }, [token]);
 
+    // Keep admin-managed company branding fresh in the desktop widget.
+    useEffect(() => {
+        if (!token) return;
+
+        let cancelled = false;
+        const refreshUser = async () => {
+            try {
+                const freshUser = await getMe();
+                if (cancelled) return;
+                setUser(freshUser);
+                localStorage.setItem('wf_user', JSON.stringify(freshUser));
+            } catch (err) {
+                if (!cancelled) {
+                    console.warn('[Auth] Unable to refresh user profile', err);
+                }
+            }
+        };
+
+        void refreshUser();
+        const interval = window.setInterval(refreshUser, 60_000);
+
+        return () => {
+            cancelled = true;
+            window.clearInterval(interval);
+        };
+    }, [token]);
+
+    // Apply admin company name/logo changes as soon as the desktop SSE stream receives them.
+    useEffect(() => {
+        const onBrandChanged = (event: Event) => {
+            const detail = (event as CustomEvent<CompanyBrandChangedDetail>).detail;
+            if (!detail?.companyName) return;
+
+            setUser((current) => {
+                if (!current) return current;
+                const next = {
+                    ...current,
+                    companyName: detail.companyName,
+                    companyLogoUrl: detail.companyLogoUrl,
+                };
+                localStorage.setItem('wf_user', JSON.stringify(next));
+                return next;
+            });
+        };
+
+        window.addEventListener('wf:company-brand-changed', onBrandChanged);
+        return () => window.removeEventListener('wf:company-brand-changed', onBrandChanged);
+    }, []);
+
     // Auto-logout on token expiry. api.ts fires 'wf:session-expired' on 401.
     useEffect(() => {
         const onExpired = () => {
@@ -152,7 +205,7 @@ function App() {
     return (
         <>
             <Titlebar userName={user.name} />
-            <Dashboard view="tracker" onLogout={handleLogout} />
+            <Dashboard view="tracker" user={user} onLogout={handleLogout} />
 
             {version && (
                 <div className="version-tag">

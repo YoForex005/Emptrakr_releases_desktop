@@ -143,7 +143,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openLogin: (code) => ipcRenderer.send('open-login', code),
 
     /**
-     * Fired when the browser calls workfolio://... after successful web login.
+     * Fired when the browser calls emptrakr://... after successful web login.
      * Used to trigger an immediate desktop session poll instead of waiting.
      */
     onAuthCallback: (callback) => {

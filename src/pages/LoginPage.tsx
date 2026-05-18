@@ -10,18 +10,16 @@
   */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { User } from '../types';
 
 interface LoginPageProps {
-    onLogin: (user: { id: string; name: string; email: string }, token: string) => void;
+    onLogin: (user: User, token: string) => void;
 }
 
 import { API_BASE, WEB_BASE } from '../config';
 
-interface DesktopSessionPayload {
+interface DesktopSessionPayload extends User {
     token: string;
-    id: string;
-    name: string;
-    email: string;
     idleThresholdSecs: number;
 }
 
@@ -47,14 +45,16 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             clearPolling();
 
             localStorage.setItem('wf_token', data.token);
-            localStorage.setItem(
-                'wf_user',
-                JSON.stringify({
-                    id: data.id,
-                    name: data.name,
-                    email: data.email,
-                })
-            );
+            const user: User = {
+                id: data.id,
+                name: data.name,
+                email: data.email,
+                companyId: data.companyId,
+                companyName: data.companyName,
+                companyLogoUrl: data.companyLogoUrl ?? null,
+            };
+
+            localStorage.setItem('wf_user', JSON.stringify(user));
 
             const threshold = data.idleThresholdSecs ?? 60;
             localStorage.setItem('wf_idle_threshold', String(threshold));
@@ -66,7 +66,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             api?.setIdleThreshold?.(threshold);
             api?.setTrackerAuthToken?.(data.token);
 
-            onLogin({ id: data.id, name: data.name, email: data.email }, data.token);
+            onLogin(user, data.token);
         },
         [clearPolling, onLogin]
     );
@@ -106,7 +106,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         return () => clearPolling();
     }, [waiting, pollDesktopSession, clearPolling]);
 
-    // Browser deep-link callback (workfolio://...) triggers immediate re-check.
+    // Browser deep-link callback (emptrakr://...) triggers immediate re-check.
     useEffect(() => {
         const api = window.electronAPI as {
             onAuthCallback?: (cb: (_payload: { url?: string }) => void) => void;
@@ -149,8 +149,19 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         <div className="login-page">
             <div className="login-card" style={{ textAlign: 'center', maxWidth: 380, background: 'rgba(255, 255, 255, 0.65)', backdropFilter: 'blur(24px)', border: '1px solid rgba(255,255,255,0.8)' }}>
                 <div className="login__brand">
-
-                    <h1 style={{ letterSpacing: '0.15em', background: 'var(--accent-gradient)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>YO HRMX</h1>
+                    <img
+                        src="/logo.png"
+                        alt="EmpTrakr logo"
+                        style={{
+                            width: 150,
+                            height: 70,
+                            objectFit: 'contain',
+                            display: 'block',
+                            margin: '0 auto 10px',
+                            borderRadius: 16,
+                        }}
+                    />
+                    <h1 style={{ letterSpacing: '0.15em', background: 'var(--accent-gradient)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>EmpTrakr</h1>
                     <p>Time Tracker Widget</p>
                 </div>
 

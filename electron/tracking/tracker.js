@@ -1,6 +1,7 @@
 const { execFile } = require('child_process');
 const axios = require('axios');
 const path = require('path');
+const { describeHttpError } = require('./httpError');
 
 function loadRuntimeConfig() {
     try {
@@ -475,13 +476,11 @@ async function syncDataToBackend(data) {
             console.log('[Tracker] Sync failed: unauthorized token');
             return;
         }
-        const backendError = err?.response?.data
-            ? JSON.stringify(err.response.data)
-            : err.message;
-        console.log('[Tracker] Sync failed:', backendError);
+        console.log('[Tracker] Sync failed:', describeHttpError(err, 'Usage sync failed without details'));
         syncFailureCount += 1;
         const delayMs = Math.min(60_000, 5_000 * syncFailureCount);
         syncBackoffUntil = Date.now() + delayMs;
+        console.log(`[Tracker] Next sync retry in ${Math.round(delayMs / 1000)}s`);
     }
 }
 

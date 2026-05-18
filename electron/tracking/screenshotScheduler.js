@@ -1,5 +1,6 @@
 const { captureCurrentMonitorPng } = require('./screenshotCapture');
 const { getDefaultDeviceId, getWorkStatus, uploadScreenshot } = require('./screenshotUploader');
+const { describeHttpError } = require('./httpError');
 
 const IS_DEV = process.env.NODE_ENV === 'development';
 const DEFAULT_SCREENSHOT_INTERVAL_MS = 10 * 60 * 1000;
@@ -91,14 +92,13 @@ async function runCaptureCycle() {
         lastFailureMessage = null;
     } catch (err) {
         const statusCode = err?.response?.status;
-        const backendMessage = err?.response?.data?.error;
-        const msg = backendMessage || (err instanceof Error ? err.message : 'Unknown screenshot error');
+        const msg = describeHttpError(err, 'Unknown screenshot error');
         lastFailureAt = new Date().toISOString();
         lastFailureMessage = msg;
         if (statusCode === 503) {
-            console.log('[Screenshot] Upload rejected: admin drive is disconnected');
+            console.log('[Screenshot] Upload rejected: admin drive is disconnected |', msg);
         } else if (statusCode === 401) {
-            console.log('[Screenshot] Upload skipped: auth token expired');
+            console.log('[Screenshot] Upload skipped: auth token expired |', msg);
         } else {
             console.log('[Screenshot] Capture/upload failed:', msg);
         }

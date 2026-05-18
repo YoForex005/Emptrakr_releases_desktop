@@ -36,17 +36,17 @@ function readRuntimeConfig() {
 }
 
 // Set the app name explicitly for the taskbar and OS integration
-app.setName('YO HRMX');
+app.setName('EmpTrakr');
 // Required for Windows taskbar grouping and notifications to show the correct name
 if (process.platform === 'win32') {
     app.setAppUserModelId('com.yohrmx.timetracker');
 }
 
 // ── Custom Protocol (Deep-Link Auth) ──────────────────────────────────────────
-// Register workfolio:// as the app's custom URL scheme so the OS can hand
+// Register emptrakr:// as the app's custom URL scheme so the OS can hand
 // browser-to-desktop callbacks back to us after the user authenticates.
 // Must be called before app is ready.
-const DEEP_LINK_PROTOCOL = 'workfolio';
+const DEEP_LINK_PROTOCOL = 'emptrakr';
 if (process.defaultApp && process.argv.length >= 2) {
     app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
 } else {

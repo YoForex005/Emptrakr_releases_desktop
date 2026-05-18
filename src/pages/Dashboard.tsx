@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTimer, formatDuration } from '../hooks/useTimer';
 import { useAppTracker } from '../hooks/useAppTracker';
+import type { User } from '../types';
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
@@ -16,6 +17,84 @@ function StatusBadge({ status }: { status: string }) {
             <span className="dot" />
             {labels[status] ?? status}
         </span>
+    );
+}
+
+function CompanyBrandHeader({ user }: { user: User }) {
+    const brandName = user.companyName?.trim() || 'EmpTrakr';
+    const logoUrl = user.companyLogoUrl?.trim() || '/logo.png';
+
+    return (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingBottom: 14, paddingTop: 4 }}>
+            <div style={{ display: 'flex', minWidth: 0, maxWidth: '100%', alignItems: 'center', gap: 12 }}>
+                {logoUrl && (
+                    <div
+                        style={{
+                            display: 'flex',
+                            flexShrink: 0,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: 52,
+                            height: 52,
+                            overflow: 'hidden',
+                            borderRadius: 18,
+                            border: '1px solid rgba(226, 232, 240, 0.8)',
+                            background: 'rgba(248, 250, 252, 0.88)',
+                            boxShadow: '0 8px 22px rgba(15, 23, 42, 0.08)',
+                        }}
+                    >
+                        <img
+                            src={logoUrl}
+                            alt={`${brandName} logo`}
+                            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                        />
+                    </div>
+                )}
+                <div style={{ minWidth: 0 }}>
+                    <div
+                        title={brandName}
+                        style={{
+                            maxWidth: 250,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            fontSize: 18,
+                            fontWeight: 800,
+                            letterSpacing: '-0.02em',
+                            color: 'var(--text-primary)',
+                        }}
+                    >
+                        {brandName}
+                    </div>
+                    <div
+                        style={{
+                            marginTop: 2,
+                            fontSize: 10,
+                            fontWeight: 800,
+                            color: 'var(--accent-dark)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.12em',
+                            lineHeight: 1,
+                        }}
+                    >
+                        Time Tracker
+                    </div>
+                    <div
+                        style={{
+                            marginTop: 4,
+                            fontSize: 8,
+                            fontWeight: 700,
+                            color: 'rgba(71, 85, 105, 0.58)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.12em',
+                            lineHeight: 1,
+                        }}
+                    >
+                        Powered by EmpTrakr
+                    </div>
+                </div>
+            </div>
+        </div>
     );
 }
 
@@ -206,10 +285,11 @@ function CloseWarningModal({
 
 interface DashboardProps {
     view: string;
+    user: User;
     onLogout: () => void;
 }
 
-export default function Dashboard({ view, onLogout }: DashboardProps) {
+export default function Dashboard({ view, user, onLogout }: DashboardProps) {
     const {
         status, loading, actionLoading, error,
         handleStart, handleBreak, handleStop,
@@ -339,18 +419,7 @@ export default function Dashboard({ view, onLogout }: DashboardProps) {
             {/* ── TRACKER VIEW ─────────────────────────────────────────────── */}
             {view === 'tracker' && (
                 <>
-                    {/* Yo HRMX Branding Header */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingBottom: 16, paddingTop: 8 }}>
-                        <div style={{
-                            fontSize: 18,
-                            fontWeight: 800,
-                            letterSpacing: '0.15em',
-                            color: 'var(--text-secondary)',
-                            textTransform: 'uppercase'
-                        }}>
-                            Yo HRMX
-                        </div>
-                    </div>
+                    <CompanyBrandHeader user={user} />
 
                     {/* Timer Control Card */}
                     <div className="timer-card">

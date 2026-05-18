@@ -1,5 +1,5 @@
 {
-  "name": "workfolio-desktop",
+  "name": "emptrakr-desktop",
   "private": true,
   "version": "1.2.17",
   "type": "module",
@@ -45,7 +45,7 @@
   },
   "build": {
     "appId": "com.yohrmx.timetracker",
-    "productName": "YO HRMX",
+    "productName": "EmpTrakr",
     "publish": [
       {
         "provider": "github",

@@ -679,6 +679,7 @@ export function useTimer() {
             maxTodayElapsedSecs,
             Math.max(0, Math.floor((effectiveNowMs - dayClampedStartMs) / 1000))
         );
+        const adjustedElapsed = Math.max(0, totalElapsed + Math.trunc(currentShift.timeAdjustmentSecs ?? 0));
 
         activeBreakSecs = currentShift.breaks.reduce((acc, b) => {
             if (!b.startTime) return acc;
@@ -689,10 +690,10 @@ export function useTimer() {
             if (overlapEnd <= overlapStart) return acc;
             return acc + Math.floor((overlapEnd - overlapStart) / 1000);
         }, 0);
-        activeBreakSecs = Math.min(activeBreakSecs, totalElapsed);
+        activeBreakSecs = Math.min(activeBreakSecs, adjustedElapsed);
 
-        activeWork = Math.max(0, totalElapsed - activeBreakSecs);
-        elapsedSecs = totalElapsed;
+        activeWork = Math.max(0, adjustedElapsed - activeBreakSecs);
+        elapsedSecs = adjustedElapsed;
     }
 
     // Show only the CURRENT shift's work/break time.

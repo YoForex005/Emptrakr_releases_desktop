@@ -1,4 +1,10 @@
 import { API_BASE } from './config';
+import type { User } from './types';
+
+export type CompanyBrandChangedDetail = {
+    companyName: string;
+    companyLogoUrl: string | null;
+};
 
 /**
  * Thrown whenever the backend returns 401 Unauthorized.
@@ -57,7 +63,18 @@ export async function login(email: string, password: string) {
         localStorage.setItem('wf_idle_threshold', String(data.user.idleThresholdSecs));
     }
 
-    return data as { token: string; user: { id: string; name: string; email: string; idleThresholdSecs: number } };
+    return data as { token: string; user: User & { idleThresholdSecs: number } };
+}
+
+export async function getMe(): Promise<User> {
+    const res = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() });
+    const data = await handleResponse(res) as { user: User & { idleThresholdSecs?: number } };
+
+    if (data.user?.idleThresholdSecs !== undefined) {
+        localStorage.setItem('wf_idle_threshold', String(data.user.idleThresholdSecs));
+    }
+
+    return data.user;
 }
 
 export async function getStatus() {
@@ -228,6 +245,20 @@ export function subscribeToThresholdEvents(
                 onThresholdChange(idleThresholdSecs);
             }
         } catch { /* malformed event — ignore */ }
+    });
+
+    source.addEventListener('company-brand-changed', (e: MessageEvent) => {
+        try {
+            const payload = JSON.parse(e.data) as Partial<CompanyBrandChangedDetail>;
+            if (typeof payload.companyName !== 'string') return;
+
+            window.dispatchEvent(new CustomEvent<CompanyBrandChangedDetail>('wf:company-brand-changed', {
+                detail: {
+                    companyName: payload.companyName,
+                    companyLogoUrl: typeof payload.companyLogoUrl === 'string' ? payload.companyLogoUrl : null,
+                },
+            }));
+        } catch { /* malformed event - ignore */ }
     });
 
     source.onerror = () => {
