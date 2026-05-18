@@ -1,5 +1,31 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Vite / TypeScript build output
+dist/
+dist-ssr/
+*.tsbuildinfo
+
+# Electron builder output
+release/
+out/
+*.blockmap
+*.dmg
+*.exe
+*.AppImage
+*.snap
+*.deb
+*.rpm
+latest*.yml
+builder-effective-config.yaml
+
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -7,20 +33,33 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# Test / coverage output
+coverage/
+.nyc_output/
+
+# Caches
+.vite/
+.cache/
+.eslintcache
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # Editor directories and files
+.idea/
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
-release/
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.orig
