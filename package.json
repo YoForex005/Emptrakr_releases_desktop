@@ -58,7 +58,7 @@
     "directories": {
       "output": "release"
     },
-    "icon": "build/icon.png",
+    "icon": "build/icon.ico",
     "files": [
       "dist/**/*",
       "electron/**/*"
@@ -79,7 +79,8 @@
         "dmg"
       ],
       "category": "public.app-category.business",
-      "identity": null
+      "identity": null,
+      "icon": "build/icon.icns"
     },
     "nsis": {
       "oneClick": true,
@@ -87,8 +88,8 @@
       "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "runAfterFinish": true,
-      "installerIcon": "build/icon.png",
-      "uninstallerIcon": "build/icon.png"
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     }
   }
 }
