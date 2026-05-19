@@ -3,7 +3,7 @@ name: Build and Release Desktop App
 on:
   push:
     tags:
-      - 'v*' # Trigger on all version tags (e.g., v1.2.20, v1.2.21-beta, v1.2.21-rc.1)
+      - 'v*' # Trigger on all version tags (e.g., v1.2.21)
 
 jobs:
   release:
@@ -27,26 +27,11 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      # Detect if this tag is a pre-release (contains -beta, -alpha, -rc, etc.)
-      - name: Set pre-release flag
-        id: prerelease
-        shell: bash
-        run: |
-          TAG="${{ github.ref_name }}"
-          if [[ "$TAG" =~ -(beta|alpha|rc|dev|preview) ]]; then
-            echo "IS_PRERELEASE=true" >> $GITHUB_OUTPUT
-            echo "This is a pre-release build: $TAG"
-          else
-            echo "IS_PRERELEASE=false" >> $GITHUB_OUTPUT
-            echo "This is a stable release build: $TAG"
-          fi
-
       - name: Build and Publish (macOS)
         if: matrix.os == 'macos-latest'
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
-          EP_PRE_RELEASE: ${{ steps.prerelease.outputs.IS_PRERELEASE }}
         run: |
           npm run build
           npx electron-builder --mac --x64 --arm64 -p always
@@ -56,7 +41,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
-          EP_PRE_RELEASE: ${{ steps.prerelease.outputs.IS_PRERELEASE }}
         run: |
           npm run build
           node scripts/write-electron-config.cjs || true
