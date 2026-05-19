@@ -196,7 +196,7 @@ function App() {
                 <Titlebar userName="Guest" />
                 <LoginPage onLogin={handleLogin} />
                 {version && (
-                    <div className="version-tag">v{version}</div>
+                    <div className="version-tag">v {version}</div>
                 )}
             </>
         );
@@ -217,7 +217,7 @@ function App() {
                     {otaStatus && updatePhase === 'idle' && !readyVersion && (
                         <span style={{ marginRight: '8px', opacity: 0.8 }}>{otaStatus.toLowerCase()} |</span>
                     )}
-                    v{version}
+                    v {version}
                 </div>
             )}
 
