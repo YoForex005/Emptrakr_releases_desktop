@@ -214,7 +214,7 @@ async function sendBreakCommand(action, source, context) {
 // ── OTA Updates (Configuration) ──────────────────────────────────────────────
 
 autoUpdater.autoDownload = true; // Download silently in the background
-autoUpdater.allowPrerelease = true;
+autoUpdater.allowPrerelease = false; // Only update to officially published "Latest" releases
 
 // Configure logging for updates
 autoUpdater.logger = console;
