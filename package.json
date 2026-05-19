@@ -1,7 +1,7 @@
 {
   "name": "emptrakr-desktop",
   "private": true,
-  "version": "1.2.18",
+  "version": "1.2.19",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
@@ -76,7 +76,8 @@
       "target": [
         "dmg"
       ],
-      "category": "public.app-category.business"
+      "category": "public.app-category.business",
+      "identity": null
     },
     "nsis": {
       "oneClick": true,
