@@ -1,4 +1,4 @@
 {
-  "API_BASE": "http://localhost:3005/api",
-  "WEB_BASE": "http://localhost:3000"
+  "API_BASE": "https://hrmsbackend.yoforex.net/api",
+  "WEB_BASE": "https://emptrakr.com"
 }

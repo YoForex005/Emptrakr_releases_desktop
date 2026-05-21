@@ -17,7 +17,7 @@
 
 process.noDeprecation = true; // Hides non-critical node warnings (like url.parse)
 
-const { app, BrowserWindow, ipcMain, powerMonitor, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, powerMonitor, shell, nativeImage } = require('electron');
 let autoUpdater = null;
 const axios = require('axios');
 const path = require('path');
@@ -63,9 +63,12 @@ if (!gotSingleInstanceLock) {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+const APP_ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
+const APP_ICON = nativeImage.createFromPath(APP_ICON_PATH);
+const WINDOW_ICON = APP_ICON.isEmpty() ? APP_ICON_PATH : APP_ICON;
 const runtimeConfig = readRuntimeConfig();
 const API_BASE = process.env.API_BASE || runtimeConfig.API_BASE || 'https://hrmsbackend.yoforex.net/api';
-const WEB_BASE = process.env.WEB_BASE || runtimeConfig.WEB_BASE || (isDev ? 'http://localhost:3000' : 'https://hrms.yoforex.net');
+const WEB_BASE = process.env.WEB_BASE || runtimeConfig.WEB_BASE || (isDev ? 'http://localhost:3000' : 'https://emptrakr.com');
 const START_EMBEDDED_BACKEND = process.env.START_EMBEDDED_BACKEND === 'true' || runtimeConfig.START_EMBEDDED_BACKEND === true;
 
 function createNoopAutoUpdater() {
@@ -413,7 +416,7 @@ function createWindow() {
         minHeight: 420,
         frame: false,
         titleBarStyle: 'hidden',
-        icon: path.join(__dirname, 'assets', 'icon.png'),
+        icon: WINDOW_ICON,
         webPreferences: {
             nodeIntegration: false,     // security: no direct Node access in renderer
             contextIsolation: true,     // security: renderer and preload have separate contexts
@@ -427,6 +430,10 @@ function createWindow() {
         backgroundColor: '#0a0b0f',
         show: false, // show only after ready-to-show to avoid white flash
     });
+
+    if (process.platform === 'win32') {
+        mainWindow.setIcon(WINDOW_ICON);
+    }
 
     const startUrl = isDev
         ? 'http://localhost:5173'

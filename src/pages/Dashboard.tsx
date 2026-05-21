@@ -3,6 +3,8 @@ import { useTimer, formatDuration } from '../hooks/useTimer';
 import { useAppTracker } from '../hooks/useAppTracker';
 import type { User } from '../types';
 
+const APP_LOGO_URL = `${import.meta.env.BASE_URL}logo.png`;
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 /** Displays the current shift status as a coloured badge */
@@ -22,7 +24,7 @@ function StatusBadge({ status }: { status: string }) {
 
 function CompanyBrandHeader({ user }: { user: User }) {
     const brandName = user.companyName?.trim() || 'EmpTrakr';
-    const logoUrl = user.companyLogoUrl?.trim() || '/logo.png';
+    const logoUrl = user.companyLogoUrl?.trim() || APP_LOGO_URL;
 
     return (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingBottom: 14, paddingTop: 4 }}>

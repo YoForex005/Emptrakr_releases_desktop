@@ -18,6 +18,8 @@ interface LoginPageProps {
 
 import { API_BASE, WEB_BASE } from '../config';
 
+const APP_LOGO_URL = `${import.meta.env.BASE_URL}logo.png`;
+
 interface DesktopSessionPayload extends User {
     token: string;
     idleThresholdSecs: number;
@@ -150,7 +152,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             <div className="login-card" style={{ textAlign: 'center', maxWidth: 380, background: 'rgba(255, 255, 255, 0.65)', backdropFilter: 'blur(24px)', border: '1px solid rgba(255,255,255,0.8)' }}>
                 <div className="login__brand">
                     <img
-                        src="/logo.png"
+                        src={APP_LOGO_URL}
                         alt="EmpTrakr logo"
                         style={{
                             width: 150,
