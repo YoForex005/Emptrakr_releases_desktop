@@ -18,21 +18,51 @@ export class SessionExpiredError extends Error {
     }
 }
 
+export class ApiError extends Error {
+    status: number;
+
+    constructor(status: number, message: string) {
+        super(message);
+        this.name = 'ApiError';
+        this.status = status;
+    }
+}
+
+function expireSavedSession(): never {
+    localStorage.removeItem('wf_token');
+    localStorage.removeItem('wf_user');
+    localStorage.removeItem('wf_idle_threshold');
+    window.dispatchEvent(new Event('wf:session-expired'));
+    throw new SessionExpiredError();
+}
+
 /**
  * Central response handler for all authenticated API calls.
  * - 401 → clears localStorage, fires 'wf:session-expired', throws SessionExpiredError
  * - Other errors → throws with the server's error message
  */
 async function handleResponse(res: Response) {
-    const data = await res.json();
-    if (res.status === 401) {
-        localStorage.removeItem('wf_token');
-        localStorage.removeItem('wf_user');
-        localStorage.removeItem('wf_idle_threshold');
-        window.dispatchEvent(new Event('wf:session-expired'));
-        throw new SessionExpiredError();
+    const text = await res.text();
+    let data: any = {};
+    if (text) {
+        try {
+            data = JSON.parse(text);
+        } catch {
+            data = { error: text };
+        }
     }
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (res.status === 401) {
+        expireSavedSession();
+    }
+    if (res.status === 404 && typeof data.error === 'string' && /user not found/i.test(data.error)) {
+        expireSavedSession();
+    }
+    if (!res.ok) {
+        const fallback = res.status === 409
+            ? 'Shift state changed. Syncing latest status.'
+            : `Request failed with HTTP ${res.status}`;
+        throw new ApiError(res.status, data.error || data.message || fallback);
+    }
     return data;
 }
 
