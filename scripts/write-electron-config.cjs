@@ -21,7 +21,7 @@ function readEnvFile(filePath) {
 
 const env = { ...readEnvFile(envPath), ...process.env };
 const config = {
-    API_BASE: env.API_BASE || env.VITE_API_BASE || 'https://hrmsbackend.yoforex.net/api',
+    API_BASE: env.API_BASE || env.VITE_API_BASE || 'https://api.emptrakr.com/api',
     WEB_BASE: env.WEB_BASE || env.VITE_WEB_BASE || 'https://emptrakr.com',
 };
 
