@@ -68,7 +68,7 @@ const APP_ICON = nativeImage.createFromPath(APP_ICON_PATH);
 const WINDOW_ICON = APP_ICON.isEmpty() ? APP_ICON_PATH : APP_ICON;
 const runtimeConfig = readRuntimeConfig();
 const API_BASE = process.env.API_BASE || runtimeConfig.API_BASE || 'https://hrmsbackend.yoforex.net/api';
-const WEB_BASE = process.env.WEB_BASE || runtimeConfig.WEB_BASE || (isDev ? 'http://localhost:3000' : 'https://emptrakr.com');
+const WEB_BASE = process.env.WEB_BASE || runtimeConfig.WEB_BASE || 'https://emptrakr.com';
 const START_EMBEDDED_BACKEND = process.env.START_EMBEDDED_BACKEND === 'true' || runtimeConfig.START_EMBEDDED_BACKEND === true;
 
 function createNoopAutoUpdater() {

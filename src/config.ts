@@ -5,5 +5,11 @@
  * Uses Vite's env variable system (import.meta.env).
  */
 
-export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:3005/api';
-export const WEB_BASE = import.meta.env.VITE_WEB_BASE ?? 'http://localhost:3000';
+const DEFAULT_API_BASE = import.meta.env.DEV
+    ? 'http://localhost:3005/api'
+    : 'https://hrmsbackend.yoforex.net/api';
+
+const DEFAULT_WEB_BASE = 'https://emptrakr.com';
+
+export const API_BASE = import.meta.env.VITE_API_BASE ?? DEFAULT_API_BASE;
+export const WEB_BASE = import.meta.env.VITE_WEB_BASE ?? DEFAULT_WEB_BASE;
