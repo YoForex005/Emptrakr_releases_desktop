@@ -17,9 +17,10 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-    getStatus, startShift, toggleBreak, stopShift, getHistory, sendHeartbeat,
+    getStatus, startShift, startBreak, endBreak, stopShift, getHistory, sendHeartbeat,
     startIdleSession, endIdleSession, getTodayIdleSecs,
-    subscribeToThresholdEvents,
+    subscribeToThresholdEvents, rolloverShift,
+    type BreakSource,
 } from '../api';
 
 
@@ -31,12 +32,12 @@ export interface HistoryShift {
     id: string;
     startTime: string;
     endTime: string | null;
-    checkoutType?: 'manual' | 'auto_shutdown';
+    checkoutType?: 'manual' | 'auto_shutdown' | 'auto_midnight';
     checkoutReason?: string | null;
     graceAppliedSecs?: number;
     timeAdjustmentSecs?: number;
     workLocation?: string;
-    breaks: Array<{ id: string; startTime: string; endTime: string | null }>;
+    breaks: Array<{ id: string; startTime: string; endTime: string | null; source?: BreakSource }>;
 }
 
 // Extend the global Window type to include Electron's preload API
@@ -60,6 +61,9 @@ declare global {
             onSleepBreakStarted: (cb: () => void) => void;
             onSleepBreakEnded: (cb: (ok: boolean) => void) => void;
             removeSleepListeners: () => void;
+            onAppCloseRequest?: (cb: () => void) => void;
+            removeAppCloseRequestListeners?: () => void;
+            forceClose?: () => void;
             // Shift status sync to main process
             updateShiftStatus: (status: string) => void;
             // Tracker auth
@@ -115,6 +119,7 @@ export function useTimer() {
     const [loading, setLoading] = useState(false);
     const [actionLoading, setActionLoading] = useState(false);
     const [error, setError] = useState('');
+    const actionInFlightRef = useRef(false);
 
     // ── Live idle threshold tracking ──────────────────────────────────────────
     // Seeded from localStorage (set at login) so the ref is correct from the start.
@@ -151,9 +156,18 @@ export function useTimer() {
     const [tick, setTick] = useState(0);
     const tickRef = useRef<number | null>(null);
 
+    // ── Midnight rollover coordination ────────────────────────────────────────
+    // The rollover effect below stops the current shift and starts a new one in
+    // sequence (~1.2s total). Any other fetchStatus poll that fires in that
+    // window would see the transient "stopped" state and flicker the UI to
+    // "NOT CLOCKED IN" — which the user perceives as the clock stopping. The
+    // ref is hoisted up here so the periodic poll can suppress itself while a
+    // rollover is in flight.
+    const rolloverInFlightRef = useRef(false);
+
     // ── Data Fetching ─────────────────────────────────────────────────────────
 
-    const fetchStatus = useCallback(async () => {
+    const fetchStatus = useCallback(async (options?: { throwOnError?: boolean }) => {
         try {
             const data = await getStatus();
             setStatus(data.status);
@@ -229,6 +243,7 @@ export function useTimer() {
             const workLoc = shiftData?.workLocation ?? 'office';
             window.electronAPI?.setWorkLocation?.(workLoc);
 
+            return true;
 
         } catch {
             // Do NOT reset status/shift on network errors.
@@ -236,6 +251,8 @@ export function useTimer() {
             // after sleep), wiping the UI would show NOT CLOCKED IN even though
             // the shift is still active. Silently ignore and keep last known state.
             console.warn('[Status] fetchStatus failed — keeping last known state');
+            if (options?.throwOnError) throw new Error('fetchStatus failed');
+            return false;
         }
     }, []);
 
@@ -247,7 +264,7 @@ export function useTimer() {
     const fetchStatusWithRetry = useCallback(async (maxAttempts = 5, delayMs = 2000) => {
         for (let i = 0; i < maxAttempts; i++) {
             try {
-                await fetchStatus();
+                await fetchStatus({ throwOnError: true });
                 return; // success
             } catch {
                 if (i < maxAttempts - 1) {
@@ -327,8 +344,15 @@ export function useTimer() {
     // Without this, the desktop only reads them once on mount and never again,
     // so admin changes to work time targets would only appear after a user action.
     // This poll ensures settings propagate within 30 seconds automatically.
+    //
+    // Skip the poll while a midnight rollover is in flight — otherwise it can
+    // observe the brief stopped state between stopShift and startShift and
+    // wipe the UI to "NOT CLOCKED IN" until the next tick.
     useEffect(() => {
-        const interval = window.setInterval(fetchStatus, 30_000);
+        const interval = window.setInterval(() => {
+            if (rolloverInFlightRef.current) return;
+            void fetchStatus();
+        }, 30_000);
         return () => clearInterval(interval);
     }, [fetchStatus]);
 
@@ -362,6 +386,82 @@ export function useTimer() {
         if (!api || !('updateShiftStatus' in api)) return;
         (api as unknown as { updateShiftStatus: (s: string) => void }).updateShiftStatus(status);
     }, [status]);
+
+    // ── Midnight rollover ───────────────────────────────────────────────────────
+    // When a shift crosses midnight, split it at the day boundary so each
+    // calendar day has its own shift record:
+    //   • Stop the running shift with reason 'midnight_rollover'
+    //   • Start a fresh shift with the same WFH/office mode
+    //
+    // Implementation: poll once every 30 s and trigger rollover whenever the
+    // currently-active shift's start date is earlier than today. This is robust
+    // to sleep / wake / app-restart — a precise setTimeout would silently fail
+    // across those events and leave the user clocked-out by accident.
+    const currentShiftRef = useRef<HistoryShift | null>(null);
+    useEffect(() => { currentShiftRef.current = currentShift; }, [currentShift]);
+
+    useEffect(() => {
+        if (status !== 'working' && status !== 'on_break') return;
+
+        const localDayKey = (d: Date) =>
+            `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+        const performRollover = async () => {
+            if (rolloverInFlightRef.current) return;
+            const shift = currentShiftRef.current;
+            if (!shift) return;
+
+            const shiftStart = new Date(shift.startTime);
+            if (Number.isNaN(shiftStart.getTime())) return;
+            if (localDayKey(shiftStart) === localDayKey(new Date())) return;
+
+            rolloverInFlightRef.current = true;
+            try {
+                console.log(
+                    `[Rollover] Active shift started ${localDayKey(shiftStart)}, ` +
+                    `today is ${localDayKey(new Date())} — auto checkout + restart`
+                );
+                // End the previous-day shift at the LAST millisecond of yesterday
+                // (today's local midnight − 1 ms) so it doesn't leak into the new
+                // day's activity log as a "12:00 am → 12:00 am, 0m" row.
+                // Small gap so the new shift's startTime is unambiguously in the
+                // new day (and the backend has time to commit the stop).
+                // Retry the restart — if stopShift succeeded but startShift fails
+                // (transient network / race with the close), the user would be left
+                // without an active shift. Keep trying for ~1 minute total before
+                // giving up so a brief blip doesn't strand them clocked-out.
+                let lastErr: unknown = null;
+                for (let attempt = 1; attempt <= 8; attempt++) {
+                    try {
+                        await rolloverShift();
+                        console.log(`[Rollover] Backend rollover completed on attempt ${attempt}`);
+                        lastErr = null;
+                        break;
+                    } catch (err) {
+                        lastErr = err;
+                        console.warn(`[Rollover] rollover attempt ${attempt} failed — retrying`, err);
+                        await new Promise(r => setTimeout(r, 1500 * attempt));
+                    }
+                }
+                if (lastErr) throw lastErr;
+            } catch (err) {
+                console.warn('[Rollover] Midnight rollover failed:', err);
+            } finally {
+                rolloverInFlightRef.current = false;
+                try {
+                    await fetchStatus();
+                    await fetchHistory();
+                    await fetchIdleSecs();
+                } catch { /* non-critical */ }
+            }
+        };
+
+        // Run immediately to catch a missed rollover (e.g. desktop was closed
+        // during midnight and just opened), then every 30 s.
+        void performRollover();
+        const interval = window.setInterval(performRollover, 30_000);
+        return () => window.clearInterval(interval);
+    }, [status, fetchStatus, fetchHistory, fetchIdleSecs]);
 
     // ── Real-time idle threshold sync (SSE) ─────────────────────────────────
     // Subscribes to the backend SSE stream on mount.
@@ -453,12 +553,10 @@ export function useTimer() {
             setIdleSessionStartTime(null);
             await endIdleSession().catch(() => { /* No idle session open — safe to ignore */ });
 
-            // Mark this break as lock-initiated so we know to auto-resume on unlock
-            lockBreakRef.current = true;
-
             console.log('[ScreenLock] Auto-starting break due to screen lock');
             try {
-                await toggleBreak();
+                const result = await startBreak('screen_lock');
+                lockBreakRef.current = result.break?.source === 'screen_lock';
                 await fetchStatus();
                 await fetchHistory();
             } catch (e) {
@@ -481,7 +579,7 @@ export function useTimer() {
 
             console.log('[ScreenLock] Auto-ending break due to screen unlock');
             try {
-                await toggleBreak();
+                await endBreak({ source: 'screen_lock' });
                 await fetchStatus();
                 await fetchHistory();
             } catch (e) {
@@ -548,13 +646,30 @@ export function useTimer() {
 
 
     // ── Active shift contribution (recalculated every second via tick) ──────────
+    // The on-screen timer is clamped to the current local calendar day so it
+    // resets to 00:00:00 at midnight even if the shift started yesterday.
+    // A shift continuing past midnight is the same record server-side; only
+    // the displayed elapsed/break/work seconds are clamped to today.
     let activeWork = 0;
     let activeBreakSecs = 0;
     let elapsedSecs = 0;
 
     if (currentShift) {
-        const totalElapsed = calcDuration(currentShift.startTime, null);
-        activeBreakSecs = calcTotalBreakSecs(currentShift.breaks);
+        const nowMs = Date.now();
+        const shiftStartMs = new Date(currentShift.startTime).getTime();
+        const dayClampedStartMs = Math.max(shiftStartMs, todayStart);
+        const totalElapsed = Math.max(0, Math.floor((nowMs - dayClampedStartMs) / 1000));
+
+        activeBreakSecs = currentShift.breaks.reduce((acc, b) => {
+            if (!b.startTime) return acc;
+            const bStartMs = new Date(b.startTime).getTime();
+            const bEndMs = b.endTime ? new Date(b.endTime).getTime() : nowMs;
+            const overlapStart = Math.max(bStartMs, todayStart);
+            const overlapEnd = Math.min(bEndMs, nowMs);
+            if (overlapEnd <= overlapStart) return acc;
+            return acc + Math.floor((overlapEnd - overlapStart) / 1000);
+        }, 0);
+
         activeWork = Math.max(0, totalElapsed - activeBreakSecs);
         elapsedSecs = totalElapsed;
     }
@@ -578,6 +693,8 @@ export function useTimer() {
     // ── Actions ───────────────────────────────────────────────────────────────
 
     const handleStart = async (workLocation: 'wfh' | 'office') => {
+        if (actionInFlightRef.current) return;
+        actionInFlightRef.current = true;
         setError('');
         setActionLoading(true);
         try {
@@ -587,17 +704,21 @@ export function useTimer() {
         } catch (e: unknown) {
             setError(e instanceof Error ? e.message : 'Error');
         } finally {
+            actionInFlightRef.current = false;
             setActionLoading(false);
         }
     };
 
     const handleBreak = async () => {
         if (!currentShift) return;
+        if (actionInFlightRef.current) return;
+        actionInFlightRef.current = true;
         setError('');
 
         // Enforce the admin-configurable break limit for instant feedback
         if (status !== 'on_break' && todayBreaksCount >= maxBreaks) {
             setError(`Break limit reached — only ${maxBreaks} break${maxBreaks !== 1 ? 's' : ''} are allowed per shift`);
+            actionInFlightRef.current = false;
             return;
         }
 
@@ -630,13 +751,17 @@ export function useTimer() {
                 if (!prev) return prev;
                 return {
                     ...prev,
-                    breaks: [...prev.breaks, { id: `temp-${Date.now()}`, startTime: now, endTime: null }],
+                    breaks: [...prev.breaks, { id: `temp-${Date.now()}`, startTime: now, endTime: null, source: 'manual' }],
                 };
             });
         }
 
         try {
-            await toggleBreak();
+            if (isCurrentlyOnBreak) {
+                await endBreak();
+            } else {
+                await startBreak('manual');
+            }
             await fetchStatus();
             await fetchHistory();
             await fetchIdleSecs(); // refresh idle chart after break state change
@@ -646,13 +771,17 @@ export function useTimer() {
             await fetchStatus();
             await fetchHistory();
         } finally {
+            actionInFlightRef.current = false;
             setActionLoading(false);
         }
     };
 
     const handleStop = async () => {
+        if (actionInFlightRef.current) return false;
+        actionInFlightRef.current = true;
         setError('');
         setActionLoading(true);
+        let ok = false;
         try {
             // Close any open idle session before stopping the shift
             await endIdleSession().catch(() => { /* Already closed or no shift — safe to ignore */ });
@@ -661,11 +790,14 @@ export function useTimer() {
             await fetchHistory();
             await fetchStatus();
             await fetchIdleSecs();
+            ok = true;
         } catch (e: unknown) {
             setError(e instanceof Error ? e.message : 'Error');
         } finally {
+            actionInFlightRef.current = false;
             setActionLoading(false);
         }
+        return ok;
     };
 
     // Suppress unused variable warning — tick is only used to trigger re-renders

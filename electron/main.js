@@ -66,6 +66,7 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const runtimeConfig = readRuntimeConfig();
 const API_BASE = process.env.API_BASE || runtimeConfig.API_BASE || 'https://hrmsbackend.yoforex.net/api';
 const WEB_BASE = process.env.WEB_BASE || runtimeConfig.WEB_BASE || (isDev ? 'http://localhost:3000' : 'https://hrms.yoforex.net');
+const START_EMBEDDED_BACKEND = process.env.START_EMBEDDED_BACKEND === 'true' || runtimeConfig.START_EMBEDDED_BACKEND === true;
 
 function createNoopAutoUpdater() {
     return {
@@ -120,6 +121,7 @@ let backendProcess = null;
 let pendingAuthCallbackUrl = null;
 let sessionAuthToken = null;
 let disconnectIntentSent = false;
+let allowWindowClose = false;
 
 // Tracks the current shift status so main.js can act on sleep/suspend
 // without waiting for the renderer (which may be too slow before network drops).
@@ -127,6 +129,30 @@ let disconnectIntentSent = false;
 let currentShiftStatus = 'stopped'; // 'stopped' | 'working' | 'on_break'
 let sleepBreakStarted = false;      // true if THIS sleep triggered a break
 let isWfhMode = false;              // true when active shift has workLocation === 'wfh'
+let quitIntentInFlight = false;
+
+function getServiceState() {
+    return {
+        appVersion: app.getVersion(),
+        currentShiftStatus,
+        isWfhMode,
+        sleepBreakStarted,
+        hasWindow: !!mainWindow && !mainWindow.isDestroyed(),
+        screenshot: typeof screenshotScheduler.getHealth === 'function'
+            ? screenshotScheduler.getHealth()
+            : undefined,
+    };
+}
+
+process.on('uncaughtException', (err) => {
+    console.error('[Fatal] uncaughtException:', err);
+    console.error('[Fatal] serviceState:', JSON.stringify(getServiceState()));
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('[Fatal] unhandledRejection:', reason);
+    console.error('[Fatal] serviceState:', JSON.stringify(getServiceState()));
+});
 
 function normalizeAuthToken(token) {
     if (typeof token !== 'string') return null;
@@ -162,17 +188,12 @@ async function sendDisconnectIntent(reason) {
     }
 }
 
-/**
- * Calls the break-toggle endpoint directly from main.js.
- * Used on sleep/resume so the request fires BEFORE the network drops.
- * Returns true if the request succeeded.
- */
-async function sendBreakToggle(context) {
+async function sendBreakCommand(action, source, context) {
     if (!sessionAuthToken) return false;
     try {
-        await axios.post(
-            `${API_BASE}/time/break`,
-            {},
+        const response = await axios.post(
+            `${API_BASE}/time/break/${action}`,
+            { source },
             {
                 headers: {
                     'Content-Type': 'application/json',
@@ -181,11 +202,11 @@ async function sendBreakToggle(context) {
                 timeout: 4000,
             }
         );
-        console.log(`[Sleep] Break toggle sent from main process (${context})`);
-        return true;
+        console.log(`[Sleep] Break ${action} sent from main process (${context}, source=${source})`);
+        return response.data || true;
     } catch (err) {
         const message = err && err.message ? err.message : 'unknown error';
-        console.warn(`[Sleep] Failed to toggle break (${context}):`, message);
+        console.warn(`[Sleep] Failed to ${action} break (${context}, source=${source}):`, message);
         return false;
     }
 }
@@ -276,6 +297,10 @@ app.on('open-url', (event, url) => {
  */
 function startBackend() {
     if (isDev) return;
+    if (!START_EMBEDDED_BACKEND) {
+        console.log(`[Backend] Embedded backend disabled; using remote API base: ${API_BASE}`);
+        return;
+    }
 
     const backendPath = path.join(process.resourcesPath, 'backend', 'dist', 'index.js');
     backendProcess = spawn('node', [backendPath], { detached: false, stdio: 'pipe' });
@@ -421,10 +446,18 @@ function createWindow() {
         // Start silent periodic screenshot scheduler
         screenshotScheduler.start();
     });
+    mainWindow.on('close', (event) => {
+        if (allowWindowClose || currentShiftStatus === 'stopped') return;
+        event.preventDefault();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('app-close-requested');
+        }
+    });
     mainWindow.on('closed', () => {
         tracker.stopTracking();
         screenshotScheduler.stop();
         mainWindow = null;
+        allowWindowClose = false;
     });
 
     // ── OTA Listeners ────────────────────────────────────────────────────────
@@ -467,6 +500,10 @@ app.whenReady().then(() => {
     // ── IPC: Window Controls ──────────────────────────────────────────────────
     // Register IPC handlers after the app is fully ready
     ipcMain.on('window-close', () => mainWindow && mainWindow.close());
+    ipcMain.on('window-force-close', () => {
+        allowWindowClose = true;
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+    });
     ipcMain.on('window-minimize', () => mainWindow && mainWindow.minimize());
     ipcMain.on('window-maximize', () => {
         if (!mainWindow) return;
@@ -616,11 +653,16 @@ app.whenReady().then(() => {
     });
 
     ipcMain.on('restart-app', () => {
+        if (currentShiftStatus !== 'stopped') {
+            sendOtaStatus('Clock out before installing update.');
+            return;
+        }
         console.log('[OTA] Restart and install triggered');
         // quitAndInstall(isSilent, isForceRunAfter)
         autoUpdater.quitAndInstall(true, true);
     });
 
+    startBackend();
     createWindow();
 
     // ── OTA Check Logic ──────────────────────────────────────────────────────
@@ -641,7 +683,27 @@ app.whenReady().then(() => {
     startIdlePolling();        // begin monitoring system idle time
     startScreenLockDetection(); // begin monitoring screen lock/unlock
 
-    app.on('before-quit', () => {
+    app.on('before-quit', (event) => {
+        if (
+            sessionAuthToken &&
+            currentShiftStatus !== 'stopped' &&
+            !disconnectIntentSent &&
+            !quitIntentInFlight
+        ) {
+            event.preventDefault();
+            quitIntentInFlight = true;
+            const fallback = setTimeout(() => {
+                allowWindowClose = true;
+                app.quit();
+            }, 3500);
+            void sendDisconnectIntent('before_quit').finally(() => {
+                clearTimeout(fallback);
+                quitIntentInFlight = false;
+                allowWindowClose = true;
+                app.quit();
+            });
+            return;
+        }
         void sendDisconnectIntent('before_quit');
     });
 
@@ -681,11 +743,11 @@ app.whenReady().then(() => {
             return;
         }
 
-        const ok = await sendBreakToggle('suspend');
-        sleepBreakStarted = ok; // only set flag if the API call succeeded
+        const result = await sendBreakCommand('start', 'sleep', 'suspend');
+        sleepBreakStarted = !!(result && result.break && result.break.source === 'sleep');
 
         // Also tell the renderer so the UI reflects the break immediately
-        if (ok && mainWindow && !mainWindow.isDestroyed()) {
+        if (sleepBreakStarted && mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('sleep-break-started');
         }
     });
@@ -699,7 +761,8 @@ app.whenReady().then(() => {
         }
 
         sleepBreakStarted = false;
-        const ok = await sendBreakToggle('resume');
+        const result = await sendBreakCommand('end', 'sleep', 'resume');
+        const ok = !!result;
 
         // Tell renderer to re-sync status from backend
         if (mainWindow && !mainWindow.isDestroyed()) {

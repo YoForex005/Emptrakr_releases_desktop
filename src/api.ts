@@ -92,8 +92,50 @@ export async function toggleBreak() {
     return handleResponse(res);
 }
 
-export async function stopShift() {
-    const res = await fetch(`${API_BASE}/time/stop`, { method: 'POST', headers: authHeaders() });
+export type BreakSource = 'manual' | 'screen_lock' | 'sleep';
+
+export async function startBreak(source: BreakSource = 'manual') {
+    const res = await fetch(`${API_BASE}/time/break/start`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ source }),
+    });
+    return handleResponse(res) as Promise<{
+        message: string;
+        status: 'on_break';
+        break: { id: string; startTime: string; endTime: string | null; source?: BreakSource };
+    }>;
+}
+
+export async function endBreak(options: { source?: BreakSource; breakId?: string } = {}) {
+    const res = await fetch(`${API_BASE}/time/break/end`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify(options),
+    });
+    return handleResponse(res) as Promise<{
+        message: string;
+        status: 'working';
+        alreadyEnded?: boolean;
+        break?: { id: string; startTime: string; endTime: string | null; source?: BreakSource };
+    }>;
+}
+
+export async function stopShift(reason?: string, endTime?: string) {
+    const hasPayload = !!reason || !!endTime;
+    const res = await fetch(`${API_BASE}/time/stop`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: hasPayload ? JSON.stringify({ reason, endTime }) : undefined,
+    });
+    return handleResponse(res);
+}
+
+export async function rolloverShift() {
+    const res = await fetch(`${API_BASE}/time/rollover`, {
+        method: 'POST',
+        headers: authHeaders(),
+    });
     return handleResponse(res);
 }
 

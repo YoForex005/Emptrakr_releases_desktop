@@ -18,6 +18,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     minimize: () => ipcRenderer.send('window-minimize'),
     maximize: () => ipcRenderer.send('window-maximize'),
     close: () => ipcRenderer.send('window-close'),
+    forceClose: () => ipcRenderer.send('window-force-close'),
+    onAppCloseRequest: (callback) => {
+        ipcRenderer.on('app-close-requested', () => callback());
+    },
+    removeAppCloseRequestListeners: () => {
+        ipcRenderer.removeAllListeners('app-close-requested');
+    },
 
     // ── Idle Detection ───────────────────────────────────────────────────────
     // The main process polls system idle time every 10 seconds and sends these

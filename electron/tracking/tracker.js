@@ -462,7 +462,8 @@ async function syncDataToBackend(data) {
                 headers: {
                     'Content-Type': 'application/json',
                     Authorization: `Bearer ${authToken}`
-                }
+                },
+                timeout: 10000
             }
         );
         syncFailureCount = 0;

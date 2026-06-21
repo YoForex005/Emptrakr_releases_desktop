@@ -28,6 +28,7 @@ async function getWorkStatus(authToken) {
         headers: {
             Authorization: `Bearer ${authToken}`,
         },
+        timeout: 10000,
     });
     return res.data?.status;
 }

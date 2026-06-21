@@ -12,6 +12,9 @@ let running = false;
 let tickInFlight = false;
 let screenshotIntervalMs = DEFAULT_SCREENSHOT_INTERVAL_MS;
 let firstCaptureAfterAuth = false;
+let lastSuccessAt = null;
+let lastFailureAt = null;
+let lastFailureMessage = null;
 
 const deviceId = getDefaultDeviceId();
 
@@ -84,16 +87,20 @@ async function runCaptureCycle() {
         } else {
             console.log('[Screenshot] Upload success.');
         }
+        lastSuccessAt = new Date().toISOString();
+        lastFailureMessage = null;
     } catch (err) {
         const statusCode = err?.response?.status;
         const backendMessage = err?.response?.data?.error;
+        const msg = backendMessage || (err instanceof Error ? err.message : 'Unknown screenshot error');
+        lastFailureAt = new Date().toISOString();
+        lastFailureMessage = msg;
         if (statusCode === 503) {
             console.log('[Screenshot] Upload rejected: admin drive is disconnected');
         } else if (statusCode === 401) {
             console.log('[Screenshot] Upload skipped: auth token expired');
         } else {
-            const msg = err instanceof Error ? err.message : 'Unknown screenshot error';
-            console.log('[Screenshot] Capture/upload failed:', backendMessage || msg);
+            console.log('[Screenshot] Capture/upload failed:', msg);
         }
     } finally {
         tickInFlight = false;
@@ -144,10 +151,23 @@ function stop() {
     console.log('[Screenshot] Scheduler stopped');
 }
 
+function getHealth() {
+    return {
+        running,
+        tickInFlight,
+        intervalMs: screenshotIntervalMs,
+        hasAuthToken: !!authToken,
+        lastSuccessAt,
+        lastFailureAt,
+        lastFailureMessage,
+    };
+}
+
 module.exports = {
     start,
     stop,
     setAuthToken,
     clearAuthToken,
     setIntervalSecs,
+    getHealth,
 };

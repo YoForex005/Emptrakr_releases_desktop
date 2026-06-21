@@ -271,12 +271,31 @@ export default function Dashboard({ view, onLogout }: DashboardProps) {
         return () => window.removeEventListener('request-app-close', handleAppClose);
     }, [status]);
 
+    useEffect(() => {
+        const api = (window as any).electronAPI;
+        if (!api?.onAppCloseRequest) return;
+
+        api.onAppCloseRequest(() => {
+            if (status !== 'stopped') {
+                setShowCloseWarning(true);
+            } else {
+                api.forceClose?.();
+            }
+        });
+
+        return () => api.removeAppCloseRequestListeners?.();
+    }, [status]);
+
     const confirmAppClose = async () => {
         setProceedingStop(true);
         setShowCloseWarning(false);
-        await handleStop();
+        const stopped = await handleStop();
+        if (!stopped) {
+            setProceedingStop(false);
+            return;
+        }
         // Finally close after checkout
-        (window as any).electronAPI?.close();
+        (window as any).electronAPI?.forceClose?.();
     };
 
     // Initialize background app tracking sync
