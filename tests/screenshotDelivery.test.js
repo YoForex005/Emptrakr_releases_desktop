@@ -43,7 +43,7 @@ test('storage retry has an independent timer and stop clears both timers and ima
     let attempts = 0;
     const instance = scheduler(async (_token, event) => {
         if (++attempts === 1) throw Object.assign(new Error('Storage unavailable'), { response: { status: 503 } });
-        return { data: { screenshot: { requestId: event.eventId, id: 'storage-id' } } };
+        return { data: { screenshot: { requestId: event.eventId, rowId: 'screenshot-row' } } };
     });
     await instance.run();
     const delays = [...instance.timers.values()].map(t => t.delay).sort((a, b) => a - b);
@@ -56,8 +56,18 @@ test('storage retry has an independent timer and stop clears both timers and ima
 });
 test('logout during delivery prevents a new screenshot capture', async () => {
     let instance;
-    instance = scheduler(async (_token, event) => { instance.api.clearAuthToken(); return { data: { screenshot: { requestId: event.eventId, id: 'storage-id' } } }; });
+    instance = scheduler(async (_token, event) => { instance.api.clearAuthToken(); return { data: { screenshot: { requestId: event.eventId, rowId: 'screenshot-row' } } }; });
     instance.queue.enqueue({ eventId: 'previous-capture', capturedAt: new Date().toISOString() });
     await instance.run(); assert.equal(instance.captures(), 0);
+    instance.api.stop(); online.disconnect();
+});
+test('a new active shift schedules a prompt screenshot capture', async () => {
+    const instance = scheduler(async (_token, event) => ({ data: { deliveryStatus: 'PROCESSING', screenshot: { requestId: event.eventId, rowId: 'screenshot-row' } } }));
+    await instance.run();
+    const before = instance.captures();
+    instance.api.setTrackingContext({ status: 'stopped', shift: null });
+    instance.api.setTrackingContext({ status: 'working', shift: { id: 'new-shift' } });
+    await instance.run(10000);
+    assert.equal(instance.captures(), before + 1);
     instance.api.stop(); online.disconnect();
 });

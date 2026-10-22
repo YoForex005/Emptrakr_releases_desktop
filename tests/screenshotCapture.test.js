@@ -21,6 +21,42 @@ test('native capture includes every display and matches metadata by display ID',
     assert.equal(all[1].imageBuffer.toString(), '22');
     assert.equal((await capture.captureCurrentMonitorPng()).display.displayId, '22');
 });
+test('blank Electron thumbnails use the Windows native capture fallback', async () => {
+    const display = { id: 1, scaleFactor: 1, bounds: { width: 100, height: 80, x: 0, y: 0 } };
+    const blankThumbnail = {
+        isEmpty: () => false,
+        toBitmap: () => Buffer.alloc(100 * 80 * 4),
+        toPNG: () => Buffer.alloc(10),
+        getSize: () => ({ width: 100, height: 80 }),
+    };
+    const fallbackImage = {
+        toBitmap: () => Buffer.from([32, 48, 64, 255, 64, 96, 128, 255]),
+        toPNG: () => Buffer.from('fallback'),
+        getSize: () => ({ width: 100, height: 80 }),
+    };
+    const capture = load({
+        screen: { getAllDisplays: () => [display], getPrimaryDisplay: () => display },
+        desktopCapturer: { getSources: async () => [{ display_id: '1', thumbnail: blankThumbnail }] },
+        nativeImage: { createFromBuffer: () => fallbackImage },
+    }, 'win32', {
+        child_process: {
+            execFile(_name, _args, _options, callback) {
+                callback(null, JSON.stringify([{ base64: Buffer.from('native').toString('base64'), sourceWidth: 100, sourceHeight: 80, x: 0, y: 0 }]), '');
+            },
+        },
+    });
+    const [result] = await capture.captureAllMonitorsPng();
+    assert.equal(result.imageBuffer.toString(), 'fallback');
+    assert.equal(result.display.displayId, '1');
+});
+
+test('blank capture detection accepts detailed images and rejects unusable frames', () => {
+    const capture = load({}, 'win32', { child_process: {} });
+    assert.equal(capture.isBlankCapture({ toBitmap: () => Buffer.alloc(400) }), true);
+    assert.equal(capture.isBlankCapture({ toBitmap: () => Buffer.alloc(400, 255) }), true);
+    assert.equal(capture.isBlankCapture({ toBitmap: () => Buffer.from([5, 5, 5, 255, 16, 16, 16, 255]) }), false);
+});
+
 test('macOS fallback uses a private directory, has a deadline and cleans up on failure', async () => {
     const removed = [], permissions = [];
     const electron = { screen: { getAllDisplays: () => [{}] }, desktopCapturer: { getSources: async () => { throw new Error('Native capture failed'); } } };

@@ -3,7 +3,7 @@ const online = require('./onlineState.cjs');
 online.subscribe(state => { if (!state.connected) clearRetryTimer(); });
 const { randomUUID } = require('crypto');
 const { captureAllMonitorsPng } = require('./screenshotCapture');
-const { getDefaultDeviceId, uploadScreenshot } = require('./screenshotUploader');
+const { getDefaultDeviceId, uploadScreenshot, reportScreenshotDiagnostic } = require('./screenshotUploader');
 const { describeHttpError } = require('./httpError');
 
 const IS_DEV = process.env.NODE_ENV === 'development';
@@ -14,7 +14,19 @@ const MAX_SCREENSHOT_INTERVAL_SECS = 3600;
 let authToken = null;
 let trackingContext = { status: 'stopped', shift: null };
 let paused = false;
-function setTrackingContext(context) { trackingContext = context.shift || context.status === 'stopped' ? context : { ...trackingContext, status: context.status }; }
+let promptCaptureShiftId = null;
+function setTrackingContext(context) {
+    const previous = trackingContext;
+    trackingContext = context.shift || context.status === 'stopped' ? context : { ...trackingContext, status: context.status };
+    const shiftId = trackingContext.status === 'working' ? trackingContext.shift?.id : null;
+    const previousShiftId = previous.status === 'working' ? previous.shift?.id : null;
+    if (shiftId && shiftId !== previousShiftId) {
+        promptCaptureShiftId = shiftId;
+        if (running && authToken) scheduleNextTick();
+    } else if (!shiftId) {
+        promptCaptureShiftId = null;
+    }
+}
 function setPaused(value) { paused = !!value; }
 let timer = null;
 let retryTimer = null;
@@ -26,6 +38,7 @@ let firstCaptureAfterAuth = false;
 let lastSuccessAt = null;
 let lastFailureAt = null;
 let lastFailureMessage = null;
+const recentDiagnosticKeys = new Map();
 
 const deviceId = getDefaultDeviceId();
 
@@ -66,7 +79,31 @@ function scheduleRetry(token) {
 
 function recordFailure(error) {
     lastFailureAt = new Date().toISOString();
-    lastFailureMessage = 'Screenshot has not been acknowledged; ' + describeHttpError(error, 'check storage and connection.');
+    lastFailureMessage = describeHttpError(error, 'Screenshot capture or upload failed.');
+}
+
+function diagnosticCode(error) {
+    const serverCode = error?.response?.data?.code;
+    if (['BLANK_SCREENSHOT', 'STORAGE_NOT_CONNECTED', 'STORAGE_DELIVERY_FAILED'].includes(serverCode)) return serverCode;
+    const message = String(error?.message || '').toLowerCase();
+    if (message.includes('blank')) return 'BLANK_SCREENSHOT';
+    if (message.includes('exceeds upload size')) return 'SCREENSHOT_TOO_LARGE';
+    if (message.includes('storage')) return 'STORAGE_DELIVERY_FAILED';
+    if (error?.response) return 'BACKEND_REJECTED';
+    return 'CAPTURE_FAILED';
+}
+
+function reportFailureDiagnostic(error) {
+    const shiftId = trackingContext.status === 'working' ? trackingContext.shift?.id : null;
+    if (!authToken || !shiftId || !online.isOnline() || typeof reportScreenshotDiagnostic !== 'function') return;
+    const code = diagnosticCode(error);
+    const key = `${shiftId}:${code}`;
+    const now = Date.now();
+    if ((recentDiagnosticKeys.get(key) || 0) > now - 5 * 60_000) return;
+    recentDiagnosticKeys.set(key, now);
+    void reportScreenshotDiagnostic(authToken, {
+        eventId: randomUUID(), shiftId, occurredAt: new Date(now).toISOString(), code, platform: process.platform,
+    }).catch(() => {});
 }
 
 async function flushPending(token) {
@@ -78,16 +115,25 @@ async function flushPending(token) {
             try {
                 const response = await uploadScreenshot(token, item);
                 const shot = response?.data?.screenshot;
-                if (authToken === token && shot?.id && shot.requestId === item.eventId) {
-                    lastSuccessAt = new Date().toISOString();
-                    lastFailureMessage = null;
-                    console.log(`[Screenshot] Upload confirmed. requestId=${shot.requestId}, rowId=${shot.rowId}, storageFileId=${shot.id}`);
+                if (authToken === token && shot?.rowId && shot.requestId === item.eventId) {
+                    if (response?.data?.deliveryStatus === 'FAILED') {
+                        recordFailure(new Error(shot.failureReason || response?.data?.code || 'Screenshot was rejected by the server'));
+                        console.log(`[Screenshot] Ingestion rejected unusable capture. requestId=${shot.requestId}, rowId=${shot.rowId}`);
+                    } else {
+                        lastSuccessAt = new Date().toISOString();
+                        lastFailureAt = null;
+                        lastFailureMessage = null;
+                        console.log(`[Screenshot] Ingestion acknowledged. requestId=${shot.requestId}, rowId=${shot.rowId}`);
+                    }
                 } else if (authToken === token) {
                     recordFailure(new Error('Matching upload acknowledgement missing'));
                 }
                 return response;
             } catch (error) {
-                if (authToken === token) recordFailure(error);
+                if (authToken === token) {
+                    recordFailure(error);
+                    reportFailureDiagnostic(error);
+                }
                 throw error;
             }
         }, () => running && authToken === token);
@@ -108,12 +154,14 @@ function scheduleNextTick() {
     clearTimer();
     if (!running) return;
 
-    const delayMs = firstCaptureAfterAuth ? Math.min(10_000, screenshotIntervalMs) : screenshotIntervalMs;
+    const promptShiftId = promptCaptureShiftId === trackingContext.shift?.id ? promptCaptureShiftId : null;
+    const delayMs = firstCaptureAfterAuth || promptShiftId ? Math.min(10_000, screenshotIntervalMs) : screenshotIntervalMs;
     firstCaptureAfterAuth = false;
 
     timer = setTimeout(async () => {
         timer = null;
         await runCaptureCycle();
+        if (promptCaptureShiftId === promptShiftId) promptCaptureShiftId = null;
         scheduleNextTick();
     }, delayMs);
 }
@@ -160,6 +208,7 @@ async function runCaptureCycle() {
         const msg = describeHttpError(err, 'Unknown screenshot error');
         lastFailureAt = new Date().toISOString();
         lastFailureMessage = msg;
+        reportFailureDiagnostic(err);
         if (statusCode === 503) {
             console.log('[Screenshot] Upload rejected: admin drive is disconnected |', msg);
         } else if (statusCode === 401 || statusCode === 403) {
@@ -181,7 +230,14 @@ function setAuthToken(token) {
     const normalized = token.trim().replace(/^Bearer\s+/i, '');
     if (authToken === (normalized || null)) return;
     clearRetryTimer();
-    if (authToken !== normalized) trackingContext = { status: 'stopped', shift: null };
+    if (authToken !== normalized) {
+        trackingContext = { status: 'stopped', shift: null };
+        promptCaptureShiftId = null;
+        lastSuccessAt = null;
+        lastFailureAt = null;
+        lastFailureMessage = null;
+        recentDiagnosticKeys.clear();
+    }
     authToken = normalized || null;
 
     // Take the first screenshot shortly after login in dev/local testing instead
@@ -196,7 +252,7 @@ function setAuthToken(token) {
 function clearAuthToken() {
     clearRetryTimer();
     if (authToken) queueForToken(authToken, 'screenshot').clear();
-    authToken = null; trackingContext = { status: 'stopped', shift: null };
+    authToken = null; trackingContext = { status: 'stopped', shift: null }; promptCaptureShiftId = null; recentDiagnosticKeys.clear();
 }
 
 function setIntervalSecs(seconds) {

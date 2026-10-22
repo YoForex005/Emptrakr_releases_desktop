@@ -34,9 +34,20 @@ async function uploadScreenshot(authToken, payload) {
     });
 }
 
+async function reportScreenshotDiagnostic(authToken, payload) {
+    return axios.post(`${API_BASE}/screenshots/diagnostics`, payload, {
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+        },
+        timeout: 10000,
+    });
+}
+
 module.exports = {
     getDefaultDeviceId,
     getWorkStatus,
     uploadScreenshot,
+    reportScreenshotDiagnostic,
 };
 
