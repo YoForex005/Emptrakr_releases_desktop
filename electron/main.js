@@ -67,7 +67,9 @@ const APP_ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
 const APP_ICON = nativeImage.createFromPath(APP_ICON_PATH);
 const WINDOW_ICON = APP_ICON.isEmpty() ? APP_ICON_PATH : APP_ICON;
 const runtimeConfig = readRuntimeConfig();
-const API_BASE = process.env.API_BASE || runtimeConfig.API_BASE || 'https://api.emptrakr.com/api';
+const API_BASE = process.env.API_BASE || (isDev
+    ? 'http://localhost:5005/api'
+    : runtimeConfig.API_BASE || 'https://api.emptrakr.com/api');
 const WEB_BASE = process.env.WEB_BASE || runtimeConfig.WEB_BASE || 'https://emptrakr.com';
 const START_EMBEDDED_BACKEND = process.env.START_EMBEDDED_BACKEND === 'true' || runtimeConfig.START_EMBEDDED_BACKEND === true;
 
@@ -421,7 +423,7 @@ function createWindow() {
             nodeIntegration: false,     // security: no direct Node access in renderer
             contextIsolation: true,     // security: renderer and preload have separate contexts
             preload: path.join(__dirname, 'preload.js'),
-            // In dev the renderer loads from http://localhost:5173, which the production
+            // In dev the renderer loads from http://127.0.0.1:5174, which the production
             // backend's CORS list doesn't include. Disabling webSecurity removes the
             // browser-side CORS check so dev fetches reach the production API.
             // Production builds load from file:// (no origin) → CORS never applies there.
@@ -436,7 +438,7 @@ function createWindow() {
     }
 
     const startUrl = isDev
-        ? 'http://localhost:5173'
+        ? 'http://127.0.0.1:5174'
         : `file://${path.join(__dirname, '../dist/index.html')}`;
 
     mainWindow.loadURL(startUrl);

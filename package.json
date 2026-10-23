@@ -8,8 +8,9 @@
   "main": "electron/main.js",
   "scripts": {
     "dev:react": "vite",
-    "dev:electron": "wait-on http://localhost:5173 && node scripts/dev-electron.cjs",
-    "dev": "concurrently \"npm run dev:react\" \"npm run dev:electron\"",
+    "dev:electron": "wait-on http://127.0.0.1:5174 && node scripts/dev-electron.cjs",
+    "dev": "node scripts/run-dev-service.cjs --name Desktop --url http://127.0.0.1:5174/ -- npm run dev:desktop",
+    "dev:desktop": "concurrently \"npm run dev:react\" \"npm run dev:electron\"",
     "build": "tsc -b && vite build",
     "electron:build": "cross-env VITE_API_BASE=https://api.emptrakr.com/api VITE_WEB_BASE=https://emptrakr.com npm run build && cross-env API_BASE=https://api.emptrakr.com/api WEB_BASE=https://emptrakr.com node scripts/write-electron-config.cjs && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
     "electron:build:mac": "cross-env VITE_API_BASE=https://api.emptrakr.com/api VITE_WEB_BASE=https://emptrakr.com npm run build && cross-env API_BASE=https://api.emptrakr.com/api WEB_BASE=https://emptrakr.com node scripts/write-electron-config.cjs && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --x64 --arm64",
