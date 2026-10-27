@@ -193,7 +193,7 @@ function App() {
     if (!user || !token) {
         return (
             <>
-                <Titlebar userName="Guest" />
+                <Titlebar />
                 <LoginPage onLogin={handleLogin} />
                 {version && (
                     <div className="version-tag">v {version}</div>
@@ -204,7 +204,7 @@ function App() {
 
     return (
         <>
-            <Titlebar userName={user.name} />
+            <Titlebar />
             <Dashboard view="tracker" user={user} onLogout={handleLogout} />
 
             {version && (

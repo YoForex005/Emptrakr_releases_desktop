@@ -107,22 +107,35 @@ export async function getMe(): Promise<User> {
     return data.user;
 }
 
-export async function getStatus() {
+export type ShiftTimer = {
+    elapsedSecs: number;
+    workSecs: number;
+    breakSecs: number;
+    idleSecs: number;
+    activeSecs: number;
+};
+
+export type TimeStatusResponse = {
+    status: 'stopped' | 'working' | 'on_break';
+    shift: unknown;
+    serverNow?: string;
+    timer?: ShiftTimer;
+    trackingLease?: { onlineUntil?: string | null };
+    idleThresholdSecs: number;
+    expectedWorkSecs: number;
+    expectedActiveSecs: number;
+    maxBreaks: number;
+    screenshotIntervalSecs: number;
+    wfhCaptureIntervalMs?: number;
+    wfhScreenIdleThresholdSecs?: number;
+    wfhThumbWidth?: number;
+    wfhThumbHeight?: number;
+};
+
+export async function getStatus(): Promise<TimeStatusResponse> {
     const res = await fetch(`${API_BASE}/time/status`, { headers: authHeaders() });
     const data = await handleResponse(res);
-    return data as {
-        status: 'stopped' | 'working' | 'on_break';
-        shift: unknown;
-        idleThresholdSecs: number;
-        expectedWorkSecs: number;
-        expectedActiveSecs: number;
-        maxBreaks: number;
-        screenshotIntervalSecs: number;
-        wfhCaptureIntervalMs?: number;
-        wfhScreenIdleThresholdSecs?: number;
-        wfhThumbWidth?: number;
-        wfhThumbHeight?: number;
-    };
+    return data as TimeStatusResponse;
 }
 
 export async function startShift(workLocation: 'wfh' | 'office', commandId = crypto.randomUUID()) {

@@ -3,8 +3,6 @@ import { useTimer, formatDuration } from '../hooks/useTimer';
 import { useAppTracker } from '../hooks/useAppTracker';
 import type { User } from '../types';
 
-const APP_LOGO_URL = `${import.meta.env.BASE_URL}logo.png`;
-
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 /** Displays the current shift status as a coloured badge */
@@ -19,84 +17,6 @@ function StatusBadge({ status }: { status: string }) {
             <span className="dot" />
             {labels[status] ?? status}
         </span>
-    );
-}
-
-function CompanyBrandHeader({ user }: { user: User }) {
-    const brandName = user.companyName?.trim() || 'EmpTrakr';
-    const logoUrl = user.companyLogoUrl?.trim() || APP_LOGO_URL;
-
-    return (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingBottom: 14, paddingTop: 4 }}>
-            <div style={{ display: 'flex', minWidth: 0, maxWidth: '100%', alignItems: 'center', gap: 12 }}>
-                {logoUrl && (
-                    <div
-                        style={{
-                            display: 'flex',
-                            flexShrink: 0,
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            width: 52,
-                            height: 52,
-                            overflow: 'hidden',
-                            borderRadius: 18,
-                            border: '1px solid rgba(226, 232, 240, 0.8)',
-                            background: 'rgba(248, 250, 252, 0.88)',
-                            boxShadow: '0 8px 22px rgba(15, 23, 42, 0.08)',
-                        }}
-                    >
-                        <img
-                            src={logoUrl}
-                            alt={`${brandName} logo`}
-                            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-                        />
-                    </div>
-                )}
-                <div style={{ minWidth: 0 }}>
-                    <div
-                        title={brandName}
-                        style={{
-                            maxWidth: 250,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                            fontSize: 18,
-                            fontWeight: 800,
-                            letterSpacing: '-0.02em',
-                            color: 'var(--text-primary)',
-                        }}
-                    >
-                        {brandName}
-                    </div>
-                    <div
-                        style={{
-                            marginTop: 2,
-                            fontSize: 10,
-                            fontWeight: 800,
-                            color: 'var(--accent-dark)',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.12em',
-                            lineHeight: 1,
-                        }}
-                    >
-                        Time Tracker
-                    </div>
-                    <div
-                        style={{
-                            marginTop: 4,
-                            fontSize: 8,
-                            fontWeight: 700,
-                            color: 'rgba(71, 85, 105, 0.58)',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.12em',
-                            lineHeight: 1,
-                        }}
-                    >
-                        Powered by EmpTrakr
-                    </div>
-                </div>
-            </div>
-        </div>
     );
 }
 
@@ -115,9 +35,9 @@ type TimerActionButtonProps = {
 /** The three prominent timer actions used in the compact tracker view. */
 function TimerActionButton({ id, title, subtitle, tone, icon, disabled, onClick }: TimerActionButtonProps) {
     const tones = {
-        success: { border: '#bfdbfe', background: '#f8fbff', iconBackground: '#eff6ff', iconColor: '#2563eb', color: '#0f172a' },
-        warning: { border: '#fde68a', background: '#fffbeb', iconBackground: '#fef3c7', iconColor: '#b45309', color: '#92400e' },
-        danger: { border: '#fecaca', background: '#fff7f7', iconBackground: '#fee2e2', iconColor: '#dc2626', color: '#b91c1c' },
+        success: { border: '#d1fae5', background: '#f7fffb', iconBackground: '#dcfce7', iconColor: '#059669', color: '#065f46' },
+        warning: { border: '#fde68a', background: '#fffdf5', iconBackground: '#fef3c7', iconColor: '#b45309', color: '#92400e' },
+        danger: { border: '#fecaca', background: '#fff8f8', iconBackground: '#fee2e2', iconColor: '#dc2626', color: '#b91c1c' },
     } as const;
     const style = tones[tone];
 
@@ -128,9 +48,9 @@ function TimerActionButton({ id, title, subtitle, tone, icon, disabled, onClick 
             onClick={onClick}
             disabled={disabled}
             style={{
-                display: 'flex', minWidth: 0, minHeight: 82, flex: 1, flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                gap: 6, border: `1px solid ${style.border}`, borderRadius: 14, background: style.background, color: style.color,
-                cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.48 : 1, padding: '10px 6px', transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+                display: 'flex', minWidth: 0, minHeight: 62, flex: 1, flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                gap: 6, border: `1px solid ${style.border}`, borderRadius: 16, background: style.background, color: style.color,
+                cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.48 : 1, padding: '12px 6px', transition: 'transform 0.15s ease, box-shadow 0.15s ease',
             }}
             onMouseEnter={event => { if (!disabled) { event.currentTarget.style.transform = 'translateY(-1px)'; event.currentTarget.style.boxShadow = '0 8px 18px rgba(15, 23, 42, 0.08)'; } }}
             onMouseLeave={event => { event.currentTarget.style.transform = 'none'; event.currentTarget.style.boxShadow = 'none'; }}
@@ -534,20 +454,17 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                             {initial}
                         </div>
                     </div>
-                    <CompanyBrandHeader user={user} />
-
                     {/* Timer Control Card */}
                     <div className="timer-card">
-                        {status === 'working' ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, marginBottom: 8 }}>
-                                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ filter: 'drop-shadow(0 4px 6px rgba(16, 185, 129, 0.3))' }}>
-                                    <circle cx="12" cy="12" r="10"></circle>
-                                    <polyline points="12 6 12 12 16 14"></polyline>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                            <span style={{ display: 'inline-flex', width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', background: '#ecfdf5', color: '#10b981', boxShadow: '0 7px 18px rgba(16, 185, 129, 0.14)' }}>
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <circle cx="12" cy="12" r="9"></circle>
+                                    <polyline points="12 7 12 12 15.5 14"></polyline>
                                 </svg>
-                            </div>
-                        ) : (
+                            </span>
                             <StatusBadge status={status} />
-                        )}
+                        </div>
 
                         <div className={`timer-display ${status}`} id="timer-display" style={completedShiftSecs !== null && status === 'stopped' ? { color: '#10b981' } : undefined}>
                             {formatDuration(displayedTimerSecs)}
@@ -568,17 +485,28 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                             </div>
                         )}
 
+                        {status !== 'stopped' && workLocation === 'office' && (
+                            <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, background: '#eff6ff', color: '#2563eb', padding: '5px 10px', borderRadius: 999 }}>
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18" /><path d="M5 21V7l7-4 7 4v14" /><path d="M9 21v-6h6v6" /></svg>
+                                    Office Location
+                                </span>
+                            </div>
+                        )}
+
                         {error && <div className="form-error" style={{ width: '100%', textAlign: 'center' }}>{error}</div>}
 
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, width: '100%', marginTop: 22 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, width: '100%', marginTop: 10 }}>
                             <TimerActionButton
                                 id="btn-check-in"
-                                title="Clock In"
-                                subtitle="Start your shift"
+                                title={status === 'stopped' ? 'Clock In' : 'Manage Breaks'}
+                                subtitle={status === 'stopped' ? 'Start your shift' : 'View & claim'}
                                 tone="success"
-                                onClick={handleClockInClick}
-                                disabled={status !== 'stopped' || actionLoading}
-                                icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>}
+                                onClick={status === 'stopped' ? handleClockInClick : () => window.electronAPI?.openDashboard?.()}
+                                disabled={actionLoading}
+                                icon={status === 'stopped'
+                                    ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+                                    : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 5h16" /><path d="M4 12h16" /><path d="M4 19h16" /><circle cx="7" cy="5" r="1" /><circle cx="15" cy="12" r="1" /><circle cx="10" cy="19" r="1" /></svg>}
                             />
                             <TimerActionButton
                                 id="btn-break"
@@ -603,24 +531,35 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                         </div>
                     </div>
 
-                    {/* View Dashboard & Logout (Beneath the timer) */}
-                    <div style={{ display: 'flex', justifyContent: 'center', gap: 16, marginTop: 16 }}>
+                    {/* Secondary navigation actions */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginTop: 8 }}>
                         <button
-                            className="btn"
-                            onClick={() => (window.electronAPI as any)?.openDashboard?.()}
-                            style={{ flex: 1, padding: '10px', fontSize: 13, background: 'transparent', border: '1px solid #e2e8f0', color: '#64748b', borderRadius: '8px', cursor: 'pointer', fontWeight: 600 }}
+                            onClick={() => window.electronAPI?.openDashboard?.()}
+                            style={{ display: 'flex', minWidth: 0, alignItems: 'center', gap: 9, border: '1px solid #d1fae5', borderRadius: 12, background: '#ffffff', color: '#1f2937', cursor: 'pointer', padding: '10px 11px', textAlign: 'left', boxShadow: '0 3px 10px rgba(15, 23, 42, 0.04)' }}
                         >
-
-                            View Dashboard
+                            <span style={{ display: 'inline-flex', width: 28, height: 28, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: '#ecfdf5', color: '#10b981' }}>
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
+                            </span>
+                            <span style={{ minWidth: 0, flex: 1 }}>
+                                <span style={{ display: 'block', fontSize: 12, fontWeight: 800, lineHeight: 1.1 }}>View Dashboard</span>
+                                <span style={{ display: 'block', marginTop: 3, color: '#94a3b8', fontSize: 9, fontWeight: 600, lineHeight: 1 }}>Summary &amp; stats</span>
+                            </span>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                         </button>
                         <button
-                            className="btn btn-ghost"
                             onClick={onLogout}
                             disabled={status !== 'stopped'}
                             title={status !== 'stopped' ? 'Please clock out before logging out' : 'Logout'}
-                            style={{ flex: 1, padding: '10px', fontSize: 13, color: '#ef4444', background: 'transparent', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                            style={{ display: 'flex', minWidth: 0, alignItems: 'center', gap: 9, border: '1px solid #edf0f4', borderRadius: 12, background: '#fafbfc', color: '#94a3b8', cursor: status === 'stopped' ? 'pointer' : 'not-allowed', opacity: status === 'stopped' ? 1 : 0.72, padding: '10px 11px', textAlign: 'left' }}
                         >
-                            Logout
+                            <span style={{ display: 'inline-flex', width: 28, height: 28, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: '#f1f5f9', color: '#94a3b8' }}>
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path d="M21 19V5a2 2 0 0 0-2-2h-6" /></svg>
+                            </span>
+                            <span style={{ minWidth: 0, flex: 1 }}>
+                                <span style={{ display: 'block', fontSize: 12, fontWeight: 800, lineHeight: 1.1 }}>Logout</span>
+                                <span style={{ display: 'block', marginTop: 3, fontSize: 9, fontWeight: 600, lineHeight: 1 }}>{status === 'stopped' ? 'End this session' : 'Clock out first'}</span>
+                            </span>
+                            {status !== 'stopped' && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>}
                         </button>
                     </div>
                 </>

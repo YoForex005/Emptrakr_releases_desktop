@@ -420,8 +420,10 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: 480,
         height: 500,
-        minWidth: 420,
-        minHeight: 420,
+        resizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        roundedCorners: true,
         frame: false,
         titleBarStyle: 'hidden',
         icon: WINDOW_ICON,

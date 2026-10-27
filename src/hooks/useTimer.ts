@@ -20,7 +20,7 @@ import {
     getStatus, startShift, startBreak, endBreak, stopShift, getHistory, sendHeartbeat,
     startIdleSession, endIdleSession, getTodayIdleSecs,
     subscribeToThresholdEvents, rolloverShift,
-    type BreakSource,
+    type BreakSource, type ShiftTimer,
 } from '../api';
 
 
@@ -40,6 +40,19 @@ export interface HistoryShift {
     breaks: Array<{ id: string; startTime: string; endTime: string | null; source?: BreakSource }>;
 }
 
+/**
+ * A server-calculated total paired with the active tracking lease.  Attendance
+ * reporting only credits time covered by a desktop heartbeat, so the desktop
+ * display must use this snapshot instead of recreating the calculation from
+ * its local clock.
+ */
+type VerifiedTimerSnapshot = {
+    shiftId: string;
+    timer: ShiftTimer;
+    receivedAtMs: number;
+    leaseDurationMs: number;
+};
+
 // Extend the global Window type to include Electron's preload API
 declare global {
     interface Window {
@@ -48,6 +61,7 @@ declare global {
             minimize: () => void;
             maximize: () => void;
             close: () => void;
+            openDashboard?: () => void;
             // Idle detection
             onIdleStart: (cb: (startTime: string) => void) => void;
             onIdleEnd: (cb: () => void) => void;
@@ -115,6 +129,7 @@ export function useTimer() {
     // ── Core shift state ──────────────────────────────────────────────────────
     const [status, setStatus] = useState<TimerStatus>('stopped');
     const [currentShift, setCurrentShift] = useState<HistoryShift | null>(null);
+    const [verifiedTimer, setVerifiedTimer] = useState<VerifiedTimerSnapshot | null>(null);
     const [history, setHistory] = useState<HistoryShift[]>([]);
     const [loading, setLoading] = useState(false);
     const [actionLoading, setActionLoading] = useState(false);
@@ -177,9 +192,22 @@ export function useTimer() {
                 const shift = data.shift as HistoryShift;
                 currentShiftIdRef.current = shift.id;
                 setCurrentShift(shift);
+                const serverNowMs = Date.parse(data.serverNow ?? '');
+                const onlineUntilMs = Date.parse(data.trackingLease?.onlineUntil ?? '');
+                if (data.timer && Number.isFinite(serverNowMs) && Number.isFinite(onlineUntilMs)) {
+                    setVerifiedTimer({
+                        shiftId: shift.id,
+                        timer: data.timer,
+                        receivedAtMs: Date.now(),
+                        leaseDurationMs: Math.max(0, onlineUntilMs - serverNowMs),
+                    });
+                } else {
+                    setVerifiedTimer(null);
+                }
             } else {
                 currentShiftIdRef.current = null;
                 setCurrentShift(null);
+                setVerifiedTimer(null);
             }
 
             // ── Live idle threshold sync ──────────────────────────────────────
@@ -379,6 +407,10 @@ export function useTimer() {
                 const shiftId = currentShiftIdRef.current;
                 if (!shiftId) return;
                 await sendHeartbeat(shiftId);
+                // The status response contains the backend's verified work
+                // total. Refresh immediately after renewing the lease so the
+                // desktop and browser reports share the same source of truth.
+                await fetchStatus();
             } catch (err) {
                 console.warn('[Heartbeat] Failed to ping backend:', err);
             }
@@ -390,7 +422,7 @@ export function useTimer() {
         }, 20_000);
 
         return () => clearInterval(interval);
-    }, [status]);
+    }, [status, fetchStatus]);
 
 
     // ── Shift status sync to main process ──────────────────────────────────────
@@ -718,6 +750,20 @@ export function useTimer() {
 
         activeWork = Math.max(0, adjustedElapsed - activeBreakSecs);
         elapsedSecs = adjustedElapsed;
+    }
+
+    // Use the backend's attendance accounting whenever it is available.  The
+    // old local calculation above is retained only for compatibility with an
+    // older backend that does not return a timer snapshot.  We increment only
+    // within the server-issued heartbeat lease; any unverified offline gap is
+    // deliberately not credited, matching the browser dashboard and reports.
+    if (currentShift && verifiedTimer?.shiftId === currentShift.id) {
+        const elapsedSinceSnapshotMs = Math.max(0, Date.now() - verifiedTimer.receivedAtMs);
+        const creditedSinceSnapshotSecs = status === 'working'
+            ? Math.floor(Math.min(elapsedSinceSnapshotMs, verifiedTimer.leaseDurationMs) / 1000)
+            : 0;
+        activeWork = Math.max(0, verifiedTimer.timer.workSecs + creditedSinceSnapshotSecs);
+        elapsedSecs = Math.max(0, verifiedTimer.timer.elapsedSecs + creditedSinceSnapshotSecs);
     }
 
     // Show only the CURRENT shift's work/break time.
