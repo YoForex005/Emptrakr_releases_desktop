@@ -65,7 +65,7 @@ declare global {
             removeAppCloseRequestListeners?: () => void;
             forceClose?: () => void;
             // Shift status sync to main process
-            updateShiftStatus: (status: string) => void;
+            updateShiftStatus: (status: TimerStatus, shiftId: string | null) => void;
             // Tracker auth
             setTrackerAuthToken: (token: string) => void;
             clearTrackerAuthToken: () => void;
@@ -144,6 +144,8 @@ export function useTimer() {
     // The two are combined on every tick to produce a smooth real-time idle counter.
     const [closedIdleSecs, setClosedIdleSecs] = useState(0);
     const [idleSessionStartTime, setIdleSessionStartTime] = useState<Date | null>(null);
+    const currentShiftIdRef = useRef<string | null>(null);
+    const idleSessionShiftIdRef = useRef<string | null>(null);
 
     // ── Screen Lock state ─────────────────────────────────────────────────────
     // `lockBreakRef` = true when the current break was automatically started by
@@ -172,8 +174,11 @@ export function useTimer() {
             const data = await getStatus();
             setStatus(data.status);
             if (data.shift && typeof data.shift === 'object') {
-                setCurrentShift(data.shift as HistoryShift);
+                const shift = data.shift as HistoryShift;
+                currentShiftIdRef.current = shift.id;
+                setCurrentShift(shift);
             } else {
+                currentShiftIdRef.current = null;
                 setCurrentShift(null);
             }
 
@@ -294,6 +299,14 @@ export function useTimer() {
         } catch { /* Silently ignore — non-critical */ }
     }, []);
 
+    const closeIdleSession = useCallback(async () => {
+        const shiftId = idleSessionShiftIdRef.current ?? currentShiftIdRef.current;
+        if (!shiftId) return;
+
+        await endIdleSession(shiftId);
+        idleSessionShiftIdRef.current = null;
+    }, []);
+
     // Initial load: fetch all data in parallel
     useEffect(() => {
         setLoading(true);
@@ -363,7 +376,9 @@ export function useTimer() {
 
         const tickHeartbeat = async () => {
             try {
-                await sendHeartbeat();
+                const shiftId = currentShiftIdRef.current;
+                if (!shiftId) return;
+                await sendHeartbeat(shiftId);
             } catch (err) {
                 console.warn('[Heartbeat] Failed to ping backend:', err);
             }
@@ -384,8 +399,9 @@ export function useTimer() {
     useEffect(() => {
         const api = window.electronAPI;
         if (!api || !('updateShiftStatus' in api)) return;
-        (api as unknown as { updateShiftStatus: (s: string) => void }).updateShiftStatus(status);
-    }, [status]);
+        (api as unknown as { updateShiftStatus: (s: TimerStatus, shiftId: string | null) => void })
+            .updateShiftStatus(status, currentShift?.id ?? null);
+    }, [status, currentShift]);
 
     // ── Midnight rollover ───────────────────────────────────────────────────────
     // When a shift crosses midnight, split it at the day boundary so each
@@ -433,7 +449,7 @@ export function useTimer() {
                 let lastErr: unknown = null;
                 for (let attempt = 1; attempt <= 8; attempt++) {
                     try {
-                        const rolloverResult = await rolloverShift();
+                        const rolloverResult = await rolloverShift(shift.id);
                         if (rolloverResult.shift && typeof rolloverResult.shift === 'object') {
                             const rolledShift = rolloverResult.shift as HistoryShift;
                             const hasOpenBreak = rolledShift.breaks.some((breakRow) => !breakRow.endTime);
@@ -505,20 +521,24 @@ export function useTimer() {
         const api = window.electronAPI;
         if (!api) return; // Running in browser (dev mode without Electron)
 
-        // Called by Electron when user has been idle for ≥60 seconds
+        // Called by Electron when the configured idle threshold is reached.
         api.onIdleStart(async (idleStartTime: string) => {
             // Only track idle during active work — never during a break
-            if (status !== 'working') return;
+            const shiftId = currentShiftIdRef.current;
+            if (status !== 'working' || !shiftId) return;
 
             console.log('[Idle] User went idle at:', idleStartTime);
 
             // Set local start time so the counter ticks every second immediately
             setIdleSessionStartTime(new Date(idleStartTime));
+            idleSessionShiftIdRef.current = shiftId;
 
             // Also persist to backend (fire-and-forget, errors are non-fatal)
             try {
-                await startIdleSession(idleStartTime);
+                await startIdleSession(idleStartTime, shiftId);
             } catch (e) {
+                idleSessionShiftIdRef.current = null;
+                setIdleSessionStartTime(null);
                 console.warn('[Idle] Failed to record idle start on server:', e);
             }
         });
@@ -532,7 +552,7 @@ export function useTimer() {
 
             // Fetch updated closed total from backend, then persist the session end
             try {
-                await endIdleSession();
+                await closeIdleSession();
                 await fetchIdleSecs(); // re-sync closed total so counter is accurate
             } catch (e) {
                 console.warn('[Idle] Failed to record idle end on server:', e);
@@ -541,7 +561,7 @@ export function useTimer() {
 
         // Cleanup listeners when component unmounts or status changes
         return () => api.removeIdleListeners();
-    }, [status, fetchIdleSecs]);
+    }, [status, closeIdleSession, fetchIdleSecs]);
 
     // ── Screen Lock / Unlock Listeners (Electron IPC) ─────────────────────────
     // When Win+L is pressed:
@@ -562,11 +582,13 @@ export function useTimer() {
 
             // Close any open idle session first — the break covers this time now
             setIdleSessionStartTime(null);
-            await endIdleSession().catch(() => { /* No idle session open — safe to ignore */ });
+            await closeIdleSession().catch(() => { /* No idle session open — safe to ignore */ });
 
             console.log('[ScreenLock] Auto-starting break due to screen lock');
             try {
-                const result = await startBreak('screen_lock');
+                const shiftId = currentShiftIdRef.current;
+                if (!shiftId) return;
+                const result = await startBreak(shiftId, 'screen_lock');
                 lockBreakRef.current = result.break?.source === 'screen_lock';
                 await fetchStatus();
                 await fetchHistory();
@@ -590,7 +612,9 @@ export function useTimer() {
 
             console.log('[ScreenLock] Auto-ending break due to screen unlock');
             try {
-                await endBreak({ source: 'screen_lock' });
+                const shiftId = currentShiftIdRef.current;
+                if (!shiftId) return;
+                await endBreak(shiftId, { source: 'screen_lock' });
                 await fetchStatus();
                 await fetchHistory();
             } catch (e) {
@@ -702,6 +726,13 @@ export function useTimer() {
     const todayWorked = activeWork;
     const todayBreakSecs = activeBreakSecs;
 
+    // The active break is kept separate from the day's accumulated break time
+    // so reminder UI never triggers early because of an earlier completed break.
+    const openBreak = currentShift?.breaks.find((item) => !item.endTime);
+    const currentBreakSecs = status === 'on_break' && openBreak
+        ? Math.max(0, Math.floor((Date.now() - new Date(openBreak.startTime).getTime()) / 1000))
+        : 0;
+
     // ── Idle time: combine closed sessions (from backend) + live active session ──
     // `closedIdleSecs` = sum of all finished idle sessions fetched from backend.
     // `liveActiveSecs` = seconds since the current idle session started (if any).
@@ -754,7 +785,7 @@ export function useTimer() {
         // If the user was idle and then clicked "Take Break", we cap the idle
         // session right now before the break begins.
         if (!isCurrentlyOnBreak) {
-            await endIdleSession().catch(() => { /* No open idle session — safe to ignore */ });
+            await closeIdleSession().catch(() => { /* No open idle session — safe to ignore */ });
         }
 
         // Optimistic update: change UI instantly before API responds
@@ -780,9 +811,9 @@ export function useTimer() {
 
         try {
             if (isCurrentlyOnBreak) {
-                await endBreak();
+                await endBreak(currentShift.id);
             } else {
-                await startBreak('manual');
+                await startBreak(currentShift.id, 'manual');
             }
             await fetchStatus();
             await fetchHistory();
@@ -806,9 +837,11 @@ export function useTimer() {
         let ok = false;
         try {
             // Close any open idle session before stopping the shift
-            await endIdleSession().catch(() => { /* Already closed or no shift — safe to ignore */ });
+            await closeIdleSession().catch(() => { /* Already closed or no shift — safe to ignore */ });
             setIdleSessionStartTime(null); // clear local idle timer
-            await stopShift();
+            const shiftId = currentShiftIdRef.current;
+            if (!shiftId) throw new Error('No active shift to clock out');
+            await stopShift(shiftId);
             await fetchHistory();
             await fetchStatus();
             await fetchIdleSecs();
@@ -838,6 +871,7 @@ export function useTimer() {
         todayWorked,
         todayBreakSecs,
         todayBreaksCount,
+        currentBreakSecs,
         todayIdleSecs,        // real-time idle seconds (increments every second)
         expectedWorkSecs,     // org-wide expected total shift length
         expectedActiveSecs,   // org-wide expected active (non-idle) time

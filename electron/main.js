@@ -22,6 +22,7 @@ let autoUpdater = null;
 const axios = require('axios');
 const path = require('path');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const tracker = require('./tracking/tracker');
 const screenshotScheduler = require('./tracking/screenshotScheduler');
 const wfhScreenMonitor = require('./tracking/wfhScreenMonitor');
@@ -132,6 +133,7 @@ let allowWindowClose = false;
 // without waiting for the renderer (which may be too slow before network drops).
 // Updated by the renderer via 'update-shift-status' IPC whenever status changes.
 let currentShiftStatus = 'stopped'; // 'stopped' | 'working' | 'on_break'
+let currentShiftId = null;
 let sleepBreakStarted = false;      // true if THIS sleep triggered a break
 let isWfhMode = false;              // true when active shift has workLocation === 'wfh'
 let quitIntentInFlight = false;
@@ -167,6 +169,7 @@ function normalizeAuthToken(token) {
 
 async function sendDisconnectIntent(reason) {
     if (!sessionAuthToken) return;
+    if (!currentShiftId) return;
     if (disconnectIntentSent) return;
 
     disconnectIntentSent = true;
@@ -175,6 +178,8 @@ async function sendDisconnectIntent(reason) {
         await axios.post(
             `${API_BASE}/time/disconnect-intent`,
             {
+                commandId: crypto.randomUUID(),
+                shiftId: currentShiftId,
                 reason: reason || 'desktop_exit',
                 disconnectedAt: new Date().toISOString(),
             },
@@ -195,10 +200,11 @@ async function sendDisconnectIntent(reason) {
 
 async function sendBreakCommand(action, source, context) {
     if (!sessionAuthToken) return false;
+    if (!currentShiftId) return false;
     try {
         const response = await axios.post(
             `${API_BASE}/time/break/${action}`,
-            { source },
+            { commandId: crypto.randomUUID(), shiftId: currentShiftId, source },
             {
                 headers: {
                     'Content-Type': 'application/json',
@@ -546,16 +552,22 @@ app.whenReady().then(() => {
         screenshotScheduler.clearAuthToken();
         sessionAuthToken = null;
         disconnectIntentSent = false;
+        currentShiftStatus = 'stopped';
+        currentShiftId = null;
     });
 
     // ── IPC: Shift Status Sync ────────────────────────────────────────────────
     // Renderer sends current shift status on every change so main.js always
     // knows whether the user is working/on_break/stopped before a suspend fires.
-    ipcMain.on('update-shift-status', (_event, status) => {
-        if (typeof status === 'string') {
-            currentShiftStatus = status;
-            console.log(`[Sleep] Shift status updated to '${currentShiftStatus}'`);
-        }
+    ipcMain.on('update-shift-status', (_event, payload) => {
+        const status = payload?.status;
+        const shiftId = payload?.shiftId;
+        if (!['stopped', 'working', 'on_break'].includes(status)) return;
+        if (status !== 'stopped' && (typeof shiftId !== 'string' || !/^[0-9a-f-]{36}$/i.test(shiftId))) return;
+
+        currentShiftStatus = status;
+        currentShiftId = status === 'stopped' ? null : shiftId;
+        console.log(`[Sleep] Shift status updated to '${currentShiftStatus}'`);
     });
 
     // ── IPC: Dynamic Idle Threshold (NEW — Admin Portal) ─────────────────────

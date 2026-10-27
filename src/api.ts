@@ -125,11 +125,11 @@ export async function getStatus() {
     };
 }
 
-export async function startShift(workLocation: 'wfh' | 'office') {
+export async function startShift(workLocation: 'wfh' | 'office', commandId = crypto.randomUUID()) {
     const res = await fetch(`${API_BASE}/time/start`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ work_location: workLocation }),
+        body: JSON.stringify({ commandId, work_location: workLocation }),
     });
     return handleResponse(res);
 }
@@ -141,11 +141,11 @@ export async function toggleBreak() {
 
 export type BreakSource = 'manual' | 'screen_lock' | 'sleep';
 
-export async function startBreak(source: BreakSource = 'manual') {
+export async function startBreak(shiftId: string, source: BreakSource = 'manual', commandId = crypto.randomUUID()) {
     const res = await fetch(`${API_BASE}/time/break/start`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ source }),
+        body: JSON.stringify({ commandId, shiftId, source }),
     });
     return handleResponse(res) as Promise<{
         message: string;
@@ -154,11 +154,15 @@ export async function startBreak(source: BreakSource = 'manual') {
     }>;
 }
 
-export async function endBreak(options: { source?: BreakSource; breakId?: string } = {}) {
+export async function endBreak(
+    shiftId: string,
+    options: { source?: BreakSource; breakId?: string } = {},
+    commandId = crypto.randomUUID(),
+) {
     const res = await fetch(`${API_BASE}/time/break/end`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify(options),
+        body: JSON.stringify({ commandId, shiftId, ...options }),
     });
     return handleResponse(res) as Promise<{
         message: string;
@@ -168,20 +172,20 @@ export async function endBreak(options: { source?: BreakSource; breakId?: string
     }>;
 }
 
-export async function stopShift(reason?: string, endTime?: string) {
-    const hasPayload = !!reason || !!endTime;
+export async function stopShift(shiftId: string, reason?: string, endTime?: string, commandId = crypto.randomUUID()) {
     const res = await fetch(`${API_BASE}/time/stop`, {
         method: 'POST',
         headers: authHeaders(),
-        body: hasPayload ? JSON.stringify({ reason, endTime }) : undefined,
+        body: JSON.stringify({ commandId, shiftId, reason, endTime }),
     });
     return handleResponse(res);
 }
 
-export async function rolloverShift() {
+export async function rolloverShift(shiftId: string, commandId = crypto.randomUUID()) {
     const res = await fetch(`${API_BASE}/time/rollover`, {
         method: 'POST',
         headers: authHeaders(),
+        body: JSON.stringify({ commandId, shiftId }),
     });
     return handleResponse(res) as Promise<{
         message: string;
@@ -192,8 +196,12 @@ export async function rolloverShift() {
     }>;
 }
 
-export async function sendHeartbeat() {
-    const res = await fetch(`${API_BASE}/time/heartbeat`, { method: 'POST', headers: authHeaders() });
+export async function sendHeartbeat(shiftId: string, commandId = crypto.randomUUID()) {
+    const res = await fetch(`${API_BASE}/time/heartbeat`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ commandId, shiftId }),
+    });
     return handleResponse(res);
 }
 
@@ -221,21 +229,24 @@ export async function getHistory() {
 /**
  * Notify the server that the user has gone idle.
  * @param startTime - The exact ISO timestamp when idleness began
- *                    (i.e., 60 seconds before this call is made).
+ *                    (i.e., when the configured idle threshold was reached).
+ * @param shiftId - The active shift that owns the idle interval.
  */
-export async function startIdleSession(startTime: string) {
+export async function startIdleSession(startTime: string, shiftId: string) {
     const res = await fetch(`${API_BASE}/time/idle/start`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ startTime }),
+        body: JSON.stringify({ commandId: crypto.randomUUID(), shiftId, startTime }),
     });
-    // 409 = idle session already open — not a client error
-    if (res.status === 409) return res.json();
     return handleResponse(res);
 }
 
-export async function endIdleSession() {
-    const res = await fetch(`${API_BASE}/time/idle/end`, { method: 'POST', headers: authHeaders() });
+export async function endIdleSession(shiftId: string) {
+    const res = await fetch(`${API_BASE}/time/idle/end`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ commandId: crypto.randomUUID(), shiftId }),
+    });
     return handleResponse(res);
 }
 

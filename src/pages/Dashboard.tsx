@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { useTimer, formatDuration } from '../hooks/useTimer';
 import { useAppTracker } from '../hooks/useAppTracker';
 import type { User } from '../types';
@@ -102,6 +102,48 @@ function CompanyBrandHeader({ user }: { user: User }) {
 
 // ── ClockInLocationModal ──────────────────────────────────────────────────
 
+type TimerActionButtonProps = {
+    id: string;
+    title: string;
+    subtitle: string;
+    tone: 'success' | 'warning' | 'danger';
+    icon: ReactNode;
+    disabled: boolean;
+    onClick: () => void;
+};
+
+/** The three prominent timer actions used in the compact tracker view. */
+function TimerActionButton({ id, title, subtitle, tone, icon, disabled, onClick }: TimerActionButtonProps) {
+    const tones = {
+        success: { border: '#bfdbfe', background: '#f8fbff', iconBackground: '#eff6ff', iconColor: '#2563eb', color: '#0f172a' },
+        warning: { border: '#fde68a', background: '#fffbeb', iconBackground: '#fef3c7', iconColor: '#b45309', color: '#92400e' },
+        danger: { border: '#fecaca', background: '#fff7f7', iconBackground: '#fee2e2', iconColor: '#dc2626', color: '#b91c1c' },
+    } as const;
+    const style = tones[tone];
+
+    return (
+        <button
+            id={id}
+            type="button"
+            onClick={onClick}
+            disabled={disabled}
+            style={{
+                display: 'flex', minWidth: 0, minHeight: 82, flex: 1, flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                gap: 6, border: `1px solid ${style.border}`, borderRadius: 14, background: style.background, color: style.color,
+                cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.48 : 1, padding: '10px 6px', transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+            }}
+            onMouseEnter={event => { if (!disabled) { event.currentTarget.style.transform = 'translateY(-1px)'; event.currentTarget.style.boxShadow = '0 8px 18px rgba(15, 23, 42, 0.08)'; } }}
+            onMouseLeave={event => { event.currentTarget.style.transform = 'none'; event.currentTarget.style.boxShadow = 'none'; }}
+        >
+            <span style={{ display: 'inline-flex', width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: 9, background: style.iconBackground, color: style.iconColor }}>
+                {icon}
+            </span>
+            <span style={{ fontSize: 12, fontWeight: 800, lineHeight: 1 }}>{title}</span>
+            <span style={{ fontSize: 10, fontWeight: 600, lineHeight: 1.1, color: '#94a3b8' }}>{subtitle}</span>
+        </button>
+    );
+}
+
 function ClockInLocationModal({
     onSelect, onCancel
 }: {
@@ -170,12 +212,54 @@ function ClockInLocationModal({
     );
 }
 
+const BREAK_REMINDER_THRESHOLD_SECS = 60;
+
+/** A persistent reminder shown while a continuous break exceeds one minute. */
+function BreakReminderModal({ breakSecs, onResume, resuming }: {
+    breakSecs: number;
+    onResume: () => void;
+    resuming: boolean;
+}) {
+    return (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="break-reminder-title" style={{ background: 'rgba(255, 255, 255, 0.34)', backdropFilter: 'blur(10px)' }}>
+            <div className="modal" style={{ width: 'min(420px, calc(100vw - 40px))', background: 'rgba(255, 255, 255, 0.97)', border: '1px solid rgba(255, 255, 255, 0.72)', boxShadow: '0 28px 70px -18px rgba(15, 23, 42, 0.30)', padding: '32px 36px 36px' }}>
+                <div style={{ display: 'flex', width: 76, height: 76, alignItems: 'center', justifyContent: 'center', margin: '0 auto 22px', borderRadius: '50%', background: 'linear-gradient(135deg, #fff7ed, #ffedd5)', boxShadow: '0 12px 26px -12px rgba(234, 88, 12, 0.36)', fontSize: 38 }} role="img" aria-label="Break reminder">
+                    ☕
+                </div>
+                <h2 id="break-reminder-title" style={{ margin: '0 0 12px', color: '#0f172a', fontSize: 24, fontWeight: 800, letterSpacing: '-0.03em', textAlign: 'center' }}>
+                    You are still on break
+                </h2>
+                <p style={{ margin: '0 0 28px', color: '#64748b', fontSize: 15, fontWeight: 600, lineHeight: 1.5, textAlign: 'center' }}>
+                    Your current break has been running for
+                </p>
+                <div style={{ marginBottom: 30, border: '1px solid #fdba74', borderRadius: 20, background: '#fffaf5', padding: '28px 20px', textAlign: 'center' }}>
+                    <div style={{ color: '#ea580c', fontSize: 48, fontWeight: 800, letterSpacing: '-0.06em', fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
+                        {formatDuration(breakSecs)}
+                    </div>
+                    <div style={{ marginTop: 12, color: '#9a3412', fontSize: 12, fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+                        Break duration
+                    </div>
+                </div>
+                <button
+                    type="button"
+                    onClick={onResume}
+                    disabled={resuming}
+                    style={{ width: '100%', border: 'none', borderRadius: 14, background: '#475569', color: '#fff', cursor: resuming ? 'not-allowed' : 'pointer', opacity: resuming ? 0.65 : 1, padding: '16px 18px', fontSize: 16, fontWeight: 800, transition: 'background 0.15s ease' }}
+                >
+                    {resuming ? 'Resuming…' : 'Resume'}
+                </button>
+            </div>
+        </div>
+    );
+}
+
 // ── CheckoutWarningModal ──────────────────────────────────────────────────
 
 function CheckoutWarningModal({
-    remainingSecs, onProceed, onCancel
+    remainingSecs, expectedWorkSecs, onProceed, onCancel
 }: {
     remainingSecs: number;
+    expectedWorkSecs: number;
     onProceed: () => void;
     onCancel: () => void;
 }) {
@@ -200,7 +284,7 @@ function CheckoutWarningModal({
                     Not enough work hours
                 </h2>
                 <p style={{ fontSize: 13, color: '#64748b', textAlign: 'center', margin: '0 0 20px', fontWeight: 500 }}>
-                    You still need to work for
+                    Your {formatDuration(expectedWorkSecs)} work target has not been reached yet.
                 </p>
 
                 {/* Big remaining time display */}
@@ -295,8 +379,8 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
     const {
         status, loading, actionLoading, error,
         handleStart, handleBreak, handleStop,
-        todayWorked, todayBreakSecs: _todayBreakSecs, todayBreaksCount, todayIdleSecs,
-        expectedWorkSecs, expectedActiveSecs, maxBreaks,
+        todayWorked, todayBreakSecs: _todayBreakSecs, todayBreaksCount, currentBreakSecs, todayIdleSecs: _todayIdleSecs,
+        expectedWorkSecs, maxBreaks,
         workLocation,
     } = useTimer();
 
@@ -313,31 +397,40 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
     const [showWarning, setShowWarning] = useState(false);
     const [remainingSecs, setRemainingSecs] = useState(0);
     const [proceedingStop, setProceedingStop] = useState(false);
+    const [completedShiftSecs, setCompletedShiftSecs] = useState<number | null>(null);
 
     // App close warning modal
     const [showCloseWarning, setShowCloseWarning] = useState(false);
 
     /** Called when user clicks "Check Out" button */
     const handleCheckoutClick = () => {
-        const activeSecs = Math.max(0, todayWorked - todayIdleSecs);
         const workShortfall = Math.max(0, expectedWorkSecs - todayWorked);
-        const activeShortfall = Math.max(0, expectedActiveSecs - activeSecs);
-        const maxShortfall = Math.max(workShortfall, activeShortfall);
-
-        if (maxShortfall > 0) {
-            setRemainingSecs(maxShortfall);
+        if (workShortfall > 0) {
+            setRemainingSecs(workShortfall);
             setShowWarning(true);
         } else {
-            handleStop(); // All criteria met — proceed immediately
+            void stopAndShowFinalTime();
         }
     };
 
     const confirmStop = async () => {
+        await stopAndShowFinalTime();
+    };
+
+    const stopAndShowFinalTime = async () => {
+        const finalWorkedSecs = todayWorked;
         setProceedingStop(true);
         setShowWarning(false);
-        await handleStop();
+        const stopped = await handleStop();
+        if (stopped) setCompletedShiftSecs(finalWorkedSecs);
         setProceedingStop(false);
     };
+
+    const displayedTimerSecs = status === 'stopped' && completedShiftSecs !== null
+        ? completedShiftSecs
+        : todayWorked;
+    const initial = user.name.trim().charAt(0).toUpperCase() || 'U';
+    const breakReminderVisible = status === 'on_break' && currentBreakSecs >= BREAK_REMINDER_THRESHOLD_SECS;
 
     // Close window logic
     useEffect(() => {
@@ -401,10 +494,19 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                 />
             )}
 
+            {breakReminderVisible && (
+                <BreakReminderModal
+                    breakSecs={currentBreakSecs}
+                    onResume={() => { void handleBreak(); }}
+                    resuming={actionLoading}
+                />
+            )}
+
             {/* Checkout warning modal */}
             {showWarning && (
                 <CheckoutWarningModal
                     remainingSecs={remainingSecs}
+                    expectedWorkSecs={expectedWorkSecs}
                     onProceed={confirmStop}
                     onCancel={() => setShowWarning(false)}
                 />
@@ -421,6 +523,17 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
             {/* ── TRACKER VIEW ─────────────────────────────────────────────── */}
             {view === 'tracker' && (
                 <>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 12 }}>
+                        <div style={{ minWidth: 0 }}>
+                            <div style={{ color: '#0f172a', fontSize: 17, fontWeight: 800, letterSpacing: '-0.02em' }}>
+                                Good morning, <span style={{ color: '#10b981' }}>{user.name.split(' ')[0]}</span>
+                            </div>
+                            <div style={{ color: '#94a3b8', fontSize: 11, fontWeight: 600, marginTop: 2 }}>Have a productive day ahead!</div>
+                        </div>
+                        <div aria-label={`${user.name} profile`} style={{ display: 'flex', width: 38, height: 38, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', background: '#10b981', color: '#fff', fontSize: 16, fontWeight: 800, boxShadow: '0 6px 14px rgba(16, 185, 129, 0.22)' }}>
+                            {initial}
+                        </div>
+                    </div>
                     <CompanyBrandHeader user={user} />
 
                     {/* Timer Control Card */}
@@ -436,12 +549,13 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                             <StatusBadge status={status} />
                         )}
 
-                        <div className={`timer-display ${status}`} id="timer-display">
-                            {formatDuration(todayWorked)}
+                        <div className={`timer-display ${status}`} id="timer-display" style={completedShiftSecs !== null && status === 'stopped' ? { color: '#10b981' } : undefined}>
+                            {formatDuration(displayedTimerSecs)}
                         </div>
 
                         <div className="timer-sub">
-                            {status === 'stopped' && 'Ready to work. Clock in when you start.'}
+                            {status === 'stopped' && completedShiftSecs !== null && 'Shift completed. Great work today!'}
+                            {status === 'stopped' && completedShiftSecs === null && 'Ready to work. Clock in when you start.'}
                             {status === 'working' && 'Shift in progress. Stay productive!'}
                             {status === 'on_break' && "Break in progress. Relax!"}
                         </div>
@@ -456,42 +570,36 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
 
                         {error && <div className="form-error" style={{ width: '100%', textAlign: 'center' }}>{error}</div>}
 
-                        <div className="timer-actions">
-                            <button
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, width: '100%', marginTop: 22 }}>
+                            <TimerActionButton
                                 id="btn-check-in"
-                                className="btn btn-success"
+                                title="Clock In"
+                                subtitle="Start your shift"
+                                tone="success"
                                 onClick={handleClockInClick}
                                 disabled={status !== 'stopped' || actionLoading}
-                                style={{ whiteSpace: 'nowrap' }}
-                            >
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-                                Clock In
-                            </button>
-
-                            <button
+                                icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>}
+                            />
+                            <TimerActionButton
                                 id="btn-break"
-                                className={`btn ${status === 'on_break' ? 'btn-primary' : 'btn-warning'}`}
+                                title={status === 'on_break' ? 'Resume' : 'Take Break'}
+                                subtitle={status === 'on_break' ? 'Continue working' : todayBreaksCount >= maxBreaks ? 'Break limit reached' : 'Start a break'}
+                                tone="warning"
                                 onClick={handleBreak}
                                 disabled={status === 'stopped' || actionLoading || (status !== 'on_break' && todayBreaksCount >= maxBreaks)}
-                                style={{ whiteSpace: 'nowrap' }}
-                            >
-                                {status === 'on_break' ? (
-                                    <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>Resume</>
-                                ) : (
-                                    <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>Break{todayBreaksCount >= maxBreaks ? ' (Max)' : ''}</>
-                                )}
-                            </button>
-
-                            <button
+                                icon={status === 'on_break'
+                                    ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+                                    : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>}
+                            />
+                            <TimerActionButton
                                 id="btn-check-out"
-                                className="btn btn-danger"
+                                title="Clock Out"
+                                subtitle="End your shift"
+                                tone="danger"
                                 onClick={handleCheckoutClick}
                                 disabled={status === 'stopped' || actionLoading || proceedingStop}
-                                style={{ whiteSpace: 'nowrap' }}
-                            >
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /></svg>
-                                Clock Out
-                            </button>
+                                icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /></svg>}
+                            />
                         </div>
                     </div>
 

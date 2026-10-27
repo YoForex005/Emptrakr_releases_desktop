@@ -111,7 +111,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * Sends current shift status to main process so it can guard the sleep break.
      * Call on every status change (working / on_break / stopped).
      */
-    updateShiftStatus: (status) => ipcRenderer.send('update-shift-status', status),
+    updateShiftStatus: (status, shiftId) => ipcRenderer.send('update-shift-status', { status, shiftId }),
 
     // ── App Tracking (Silent) ────────────────────────────────────────────────
     onAppTrackerUpdate: (callback) => {
