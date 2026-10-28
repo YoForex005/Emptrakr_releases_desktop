@@ -37,7 +37,7 @@ export interface HistoryShift {
     graceAppliedSecs?: number;
     timeAdjustmentSecs?: number;
     workLocation?: string;
-    breaks: Array<{ id: string; startTime: string; endTime: string | null; source?: BreakSource }>;
+    breaks: Array<{ id: string; startTime: string; endTime: string | null; source?: BreakSource; creditStatus?: 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED' }>;
 }
 
 /**
@@ -109,6 +109,7 @@ function calcDuration(start: string, end: string | null): number {
 /** Sum up all break durations for a shift (open breaks count to now) */
 function calcTotalBreakSecs(breaks: HistoryShift['breaks']): number {
     return breaks.reduce((acc, b) => {
+        if (b.creditStatus === 'APPROVED') return acc;
         if (!b.startTime) return acc;
         return acc + calcDuration(b.startTime, b.endTime);
     }, 0);
@@ -548,6 +549,10 @@ export function useTimer() {
             // The status endpoint is the canonical source for every live
             // operational setting, including capture and WFH configuration.
             void fetchStatus();
+        }, () => {
+            // An admin has approved or rejected a submitted break claim. The
+            // status endpoint is authoritative for restored quota and work time.
+            void Promise.all([fetchStatus(), fetchHistory(), fetchIdleSecs()]);
         });
 
         return unsubscribe; // closes the EventSource on unmount
@@ -722,7 +727,9 @@ export function useTimer() {
     // Break limit is per shift, so only the current shift's breaks count here.
     // This lets an admin increase Max Breaks Per Shift and have the button
     // unlock on the next status poll without old shifts from today blocking it.
-    const todayBreaksCount = currentShift?.breaks.length ?? 0;
+    const todayBreaksCount = currentShift?.breaks.filter((breakRow) =>
+        (breakRow.source ?? 'manual') === 'manual' && breakRow.creditStatus !== 'APPROVED'
+    ).length ?? 0;
 
 
     // ── Active shift contribution (recalculated every second via tick) ──────────
@@ -745,6 +752,7 @@ export function useTimer() {
         const adjustedElapsed = Math.max(0, totalElapsed + Math.trunc(currentShift.timeAdjustmentSecs ?? 0));
 
         activeBreakSecs = currentShift.breaks.reduce((acc, b) => {
+            if (b.creditStatus === 'APPROVED') return acc;
             if (!b.startTime) return acc;
             const bStartMs = new Date(b.startTime).getTime();
             const bEndMs = b.endTime ? new Date(b.endTime).getTime() : nowMs;

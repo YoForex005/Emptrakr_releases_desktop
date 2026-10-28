@@ -18,6 +18,33 @@ export type AttendanceSettingsChangedDetail = {
     wfhThumbHeight?: number;
 };
 
+export type BreakCreditReason =
+    | 'MEETING_DURING_BREAK'
+    | 'CLIENT_CALL'
+    | 'URGENT_TASK'
+    | 'MANAGER_REQUEST'
+    | 'OTHER_WORK';
+
+export type BreakCreditStatus = 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export type BreakCreditReviewedDetail = {
+    breakId: string;
+    status: 'APPROVED' | 'REJECTED';
+};
+
+export type BreakCreditEntry = {
+    id: string;
+    startTime: string;
+    endTime: string;
+    source: BreakSource;
+    durationSecs: number;
+    creditStatus: BreakCreditStatus;
+    creditReason: BreakCreditReason | null;
+    creditReasonLabel: string;
+    creditRequestedAt: string | null;
+    creditReviewedAt: string | null;
+};
+
 /**
  * Thrown whenever the backend returns 401 Unauthorized.
  * App.tsx listens for the custom 'wf:session-expired' event to
@@ -254,8 +281,33 @@ export async function getHistory() {
         checkoutReason?: string | null;
         graceAppliedSecs?: number;
         timeAdjustmentSecs?: number;
-        breaks: Array<{ id: string; startTime: string; endTime: string | null }>;
+        breaks: Array<{
+            id: string;
+            startTime: string;
+            endTime: string | null;
+            source?: BreakSource;
+            creditStatus?: BreakCreditStatus;
+        }>;
     }>;
+}
+
+/** Load completed manual breaks that can be submitted for an admin work credit. */
+export async function getBreakCredits(): Promise<BreakCreditEntry[]> {
+    const res = await fetch(`${API_BASE}/time/break-credits`, { headers: authHeaders() });
+    const data = await handleResponse(res) as { breaks?: unknown };
+    return Array.isArray(data.breaks) ? data.breaks as BreakCreditEntry[] : [];
+}
+
+/** Submit one completed break for company-admin review. */
+export async function requestBreakCredit(breakId: string, reason: BreakCreditReason): Promise<BreakCreditEntry> {
+    const res = await fetch(`${API_BASE}/time/break-credits/${encodeURIComponent(breakId)}/request`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ reason }),
+    });
+    const data = await handleResponse(res) as { break?: BreakCreditEntry };
+    if (!data.break) throw new Error('The break credit request was not returned by the server.');
+    return data.break;
 }
 
 
@@ -311,6 +363,7 @@ export async function getTodayIdleSecs(): Promise<number> {
 export function subscribeToThresholdEvents(
     onThresholdChange: (secs: number) => void,
     onAttendanceSettingsChange?: (settings: AttendanceSettingsChangedDetail) => void,
+    onBreakCreditReviewed?: (update: BreakCreditReviewedDetail) => void,
 ): () => void {
     const token = getToken();
     if (!token) return () => { }; // not logged in
@@ -346,6 +399,25 @@ export function subscribeToThresholdEvents(
             const parsed: unknown = JSON.parse(e.data);
             if (!parsed || typeof parsed !== 'object') return;
             onAttendanceSettingsChange?.(parsed as AttendanceSettingsChangedDetail);
+        } catch { /* malformed event - ignore */ }
+    });
+
+    source.addEventListener('break-credit-reviewed', (e: MessageEvent) => {
+        try {
+            const parsed: unknown = JSON.parse(e.data);
+            if (!parsed || typeof parsed !== 'object') return;
+            const update = parsed as { breakId?: unknown; status?: unknown };
+            if (
+                typeof update.breakId === 'string' &&
+                (update.status === 'APPROVED' || update.status === 'REJECTED')
+            ) {
+                const detail: BreakCreditReviewedDetail = { breakId: update.breakId, status: update.status };
+                // The timer hook refreshes its authoritative totals through the
+                // callback. This event lets the visible dashboard replace the
+                // temporary "request sent" message with the review outcome.
+                window.dispatchEvent(new CustomEvent<BreakCreditReviewedDetail>('wf:break-credit-reviewed', { detail }));
+                onBreakCreditReviewed?.(detail);
+            }
         } catch { /* malformed event - ignore */ }
     });
 
