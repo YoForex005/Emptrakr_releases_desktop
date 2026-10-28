@@ -541,10 +541,17 @@ export function useTimer() {
             if (api && 'setIdleThreshold' in api) {
                 (api as unknown as { setIdleThreshold: (s: number) => void }).setIdleThreshold(newThreshold);
             }
+        }, (settings) => {
+            if (typeof settings.maxBreaks === 'number') {
+                setMaxBreaks(settings.maxBreaks);
+            }
+            // The status endpoint is the canonical source for every live
+            // operational setting, including capture and WFH configuration.
+            void fetchStatus();
         });
 
         return unsubscribe; // closes the EventSource on unmount
-    }, []);
+    }, [fetchStatus]);
 
     // ── Idle Event Listeners (Electron IPC) ───────────────────────────────────
     // Only active when a shift is in 'working' state (not on break, not stopped).

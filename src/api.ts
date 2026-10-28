@@ -6,6 +6,18 @@ export type CompanyBrandChangedDetail = {
     companyLogoUrl: string | null;
 };
 
+export type AttendanceSettingsChangedDetail = {
+    maxBreaks?: number;
+    expectedWorkSecs?: number;
+    expectedActiveSecs?: number;
+    screenshotIntervalSecs?: number;
+    wfhScreenshotIntervalSecs?: number;
+    wfhCaptureIntervalMs?: number;
+    wfhScreenIdleThresholdSecs?: number;
+    wfhThumbWidth?: number;
+    wfhThumbHeight?: number;
+};
+
 /**
  * Thrown whenever the backend returns 401 Unauthorized.
  * App.tsx listens for the custom 'wf:session-expired' event to
@@ -284,7 +296,8 @@ export async function getTodayIdleSecs(): Promise<number> {
  * @returns                  Cleanup function — call on component unmount
  */
 export function subscribeToThresholdEvents(
-    onThresholdChange: (secs: number) => void
+    onThresholdChange: (secs: number) => void,
+    onAttendanceSettingsChange?: (settings: AttendanceSettingsChangedDetail) => void,
 ): () => void {
     const token = getToken();
     if (!token) return () => { }; // not logged in
@@ -312,6 +325,14 @@ export function subscribeToThresholdEvents(
                     companyLogoUrl: typeof payload.companyLogoUrl === 'string' ? payload.companyLogoUrl : null,
                 },
             }));
+        } catch { /* malformed event - ignore */ }
+    });
+
+    source.addEventListener('attendance-settings-changed', (e: MessageEvent) => {
+        try {
+            const parsed: unknown = JSON.parse(e.data);
+            if (!parsed || typeof parsed !== 'object') return;
+            onAttendanceSettingsChange?.(parsed as AttendanceSettingsChangedDetail);
         } catch { /* malformed event - ignore */ }
     });
 

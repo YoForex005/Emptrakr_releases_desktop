@@ -141,30 +141,30 @@ function BreakReminderModal({ breakSecs, onResume, resuming }: {
     resuming: boolean;
 }) {
     return (
-        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="break-reminder-title" style={{ background: 'rgba(255, 255, 255, 0.34)', backdropFilter: 'blur(10px)' }}>
-            <div className="modal" style={{ width: 'min(420px, calc(100vw - 40px))', background: 'rgba(255, 255, 255, 0.97)', border: '1px solid rgba(255, 255, 255, 0.72)', boxShadow: '0 28px 70px -18px rgba(15, 23, 42, 0.30)', padding: '32px 36px 36px' }}>
-                <div style={{ display: 'flex', width: 76, height: 76, alignItems: 'center', justifyContent: 'center', margin: '0 auto 22px', borderRadius: '50%', background: 'linear-gradient(135deg, #fff7ed, #ffedd5)', boxShadow: '0 12px 26px -12px rgba(234, 88, 12, 0.36)', fontSize: 38 }} role="img" aria-label="Break reminder">
+        <div className="modal-overlay break-reminder-overlay" role="dialog" aria-modal="true" aria-labelledby="break-reminder-title">
+            <div className="modal break-reminder-modal">
+                <div className="break-reminder-icon" role="img" aria-label="Break reminder">
                     ☕
                 </div>
-                <h2 id="break-reminder-title" style={{ margin: '0 0 12px', color: '#0f172a', fontSize: 24, fontWeight: 800, letterSpacing: '-0.03em', textAlign: 'center' }}>
+                <h2 id="break-reminder-title" className="break-reminder-title">
                     You are still on break
                 </h2>
-                <p style={{ margin: '0 0 28px', color: '#64748b', fontSize: 15, fontWeight: 600, lineHeight: 1.5, textAlign: 'center' }}>
+                <p className="break-reminder-description">
                     Your current break has been running for
                 </p>
-                <div style={{ marginBottom: 30, border: '1px solid #fdba74', borderRadius: 20, background: '#fffaf5', padding: '28px 20px', textAlign: 'center' }}>
-                    <div style={{ color: '#ea580c', fontSize: 48, fontWeight: 800, letterSpacing: '-0.06em', fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
+                <div className="break-reminder-duration">
+                    <div className="break-reminder-duration__value">
                         {formatDuration(breakSecs)}
                     </div>
-                    <div style={{ marginTop: 12, color: '#9a3412', fontSize: 12, fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+                    <div className="break-reminder-duration__label">
                         Break duration
                     </div>
                 </div>
                 <button
                     type="button"
+                    className="break-reminder-resume"
                     onClick={onResume}
                     disabled={resuming}
-                    style={{ width: '100%', border: 'none', borderRadius: 14, background: '#475569', color: '#fff', cursor: resuming ? 'not-allowed' : 'pointer', opacity: resuming ? 0.65 : 1, padding: '16px 18px', fontSize: 16, fontWeight: 800, transition: 'background 0.15s ease' }}
                 >
                     {resuming ? 'Resuming…' : 'Resume'}
                 </button>
@@ -443,21 +443,21 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
             {/* ── TRACKER VIEW ─────────────────────────────────────────────── */}
             {view === 'tracker' && (
                 <>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 12 }}>
+                    <div className="tracker-greeting">
                         <div style={{ minWidth: 0 }}>
-                            <div style={{ color: '#0f172a', fontSize: 17, fontWeight: 800, letterSpacing: '-0.02em' }}>
+                            <div className="tracker-greeting__title">
                                 Good morning, <span style={{ color: '#10b981' }}>{user.name.split(' ')[0]}</span>
                             </div>
-                            <div style={{ color: '#94a3b8', fontSize: 11, fontWeight: 600, marginTop: 2 }}>Have a productive day ahead!</div>
+                            <div className="tracker-greeting__subtitle">Have a productive day ahead!</div>
                         </div>
-                        <div aria-label={`${user.name} profile`} style={{ display: 'flex', width: 38, height: 38, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', background: '#10b981', color: '#fff', fontSize: 16, fontWeight: 800, boxShadow: '0 6px 14px rgba(16, 185, 129, 0.22)' }}>
+                        <div aria-label={`${user.name} profile`} className="tracker-profile">
                             {initial}
                         </div>
                     </div>
                     {/* Timer Control Card */}
                     <div className="timer-card">
-                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                            <span style={{ display: 'inline-flex', width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', background: '#ecfdf5', color: '#10b981', boxShadow: '0 7px 18px rgba(16, 185, 129, 0.14)' }}>
+                        <div className="tracker-timer-status">
+                            <span className="tracker-timer-icon">
                                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                     <circle cx="12" cy="12" r="9"></circle>
                                     <polyline points="12 7 12 12 15.5 14"></polyline>
@@ -496,7 +496,7 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
 
                         {error && <div className="form-error" style={{ width: '100%', textAlign: 'center' }}>{error}</div>}
 
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, width: '100%', marginTop: 10 }}>
+                        <div className="tracker-actions">
                             <TimerActionButton
                                 id="btn-check-in"
                                 title={status === 'stopped' ? 'Clock In' : 'Manage Breaks'}
@@ -530,18 +530,17 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                             />
                         </div>
                     </div>
-
                     {/* Secondary navigation actions */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginTop: 8 }}>
+                    <div className="tracker-secondary-actions">
                         <button
                             onClick={() => window.electronAPI?.openDashboard?.()}
-                            style={{ display: 'flex', minWidth: 0, alignItems: 'center', gap: 9, border: '1px solid #d1fae5', borderRadius: 12, background: '#ffffff', color: '#1f2937', cursor: 'pointer', padding: '10px 11px', textAlign: 'left', boxShadow: '0 3px 10px rgba(15, 23, 42, 0.04)' }}
+                            style={{ display: 'flex', minWidth: 0, alignItems: 'center', gap: 9, border: '1px solid #d1fae5', borderRadius: 20, background: '#ffffff', color: '#1f2937', cursor: 'pointer', padding: '12px', textAlign: 'left', boxShadow: '0 3px 10px rgba(15, 23, 42, 0.04)' }}
                         >
-                            <span style={{ display: 'inline-flex', width: 28, height: 28, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: '#ecfdf5', color: '#10b981' }}>
+                            <span style={{ display: 'inline-flex', width: 38, height: 38, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 13, background: '#ecfdf5', color: '#10b981' }}>
                                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
                             </span>
                             <span style={{ minWidth: 0, flex: 1 }}>
-                                <span style={{ display: 'block', fontSize: 12, fontWeight: 800, lineHeight: 1.1 }}>View Dashboard</span>
+                                <span style={{ display: 'block', fontSize: 11, fontWeight: 800, lineHeight: 1.1 }}>View Dashboard</span>
                                 <span style={{ display: 'block', marginTop: 3, color: '#94a3b8', fontSize: 9, fontWeight: 600, lineHeight: 1 }}>Summary &amp; stats</span>
                             </span>
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
@@ -550,13 +549,13 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                             onClick={onLogout}
                             disabled={status !== 'stopped'}
                             title={status !== 'stopped' ? 'Please clock out before logging out' : 'Logout'}
-                            style={{ display: 'flex', minWidth: 0, alignItems: 'center', gap: 9, border: '1px solid #edf0f4', borderRadius: 12, background: '#fafbfc', color: '#94a3b8', cursor: status === 'stopped' ? 'pointer' : 'not-allowed', opacity: status === 'stopped' ? 1 : 0.72, padding: '10px 11px', textAlign: 'left' }}
+                            style={{ display: 'flex', minWidth: 0, alignItems: 'center', gap: 9, border: '1px solid #edf0f4', borderRadius: 20, background: '#fafbfc', color: '#94a3b8', cursor: status === 'stopped' ? 'pointer' : 'not-allowed', opacity: status === 'stopped' ? 1 : 0.72, padding: '12px', textAlign: 'left' }}
                         >
-                            <span style={{ display: 'inline-flex', width: 28, height: 28, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: '#f1f5f9', color: '#94a3b8' }}>
+                            <span style={{ display: 'inline-flex', width: 38, height: 38, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 13, background: '#f1f5f9', color: '#94a3b8' }}>
                                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path d="M21 19V5a2 2 0 0 0-2-2h-6" /></svg>
                             </span>
                             <span style={{ minWidth: 0, flex: 1 }}>
-                                <span style={{ display: 'block', fontSize: 12, fontWeight: 800, lineHeight: 1.1 }}>Logout</span>
+                                <span style={{ display: 'block', fontSize: 11, fontWeight: 800, lineHeight: 1.1 }}>Logout</span>
                                 <span style={{ display: 'block', marginTop: 3, fontSize: 9, fontWeight: 600, lineHeight: 1 }}>{status === 'stopped' ? 'End this session' : 'Clock out first'}</span>
                             </span>
                             {status !== 'stopped' && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>}

@@ -418,14 +418,17 @@ function startScreenLockDetection() {
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 480,
-        height: 500,
+        // Fixed portrait 9:16 desktop widget.
+        // Compact floating tracker widget.
+        width: 400,
+        height: 520,
         resizable: false,
         maximizable: false,
         fullscreenable: false,
         roundedCorners: true,
         frame: false,
         titleBarStyle: 'hidden',
+        transparent: true,
         icon: WINDOW_ICON,
         webPreferences: {
             nodeIntegration: false,     // security: no direct Node access in renderer
@@ -437,7 +440,8 @@ function createWindow() {
             // Production builds load from file:// (no origin) → CORS never applies there.
             webSecurity: !isDev,
         },
-        backgroundColor: '#0a0b0f',
+        // The renderer draws the visible rounded shell; the outer pixels stay transparent.
+        backgroundColor: '#00000000',
         show: false, // show only after ready-to-show to avoid white flash
     });
 
