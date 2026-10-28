@@ -1,4 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react';
+import { createDashboardHandoff } from '../api';
 import { useTimer, formatDuration } from '../hooks/useTimer';
 import { useAppTracker } from '../hooks/useAppTracker';
 import type { User } from '../types';
@@ -306,11 +307,32 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
 
     // Clock-in location modal
     const [showLocationModal, setShowLocationModal] = useState(false);
+    const [dashboardOpening, setDashboardOpening] = useState(false);
+    const [dashboardError, setDashboardError] = useState('');
 
     const handleClockInClick = () => setShowLocationModal(true);
     const handleLocationSelect = (location: 'wfh' | 'office') => {
         setShowLocationModal(false);
         handleStart(location);
+    };
+
+    const handleOpenDashboard = async () => {
+        if (dashboardOpening) return;
+        if (!window.electronAPI?.openDashboard) {
+            setDashboardError('Dashboard access is available from the desktop app only.');
+            return;
+        }
+
+        setDashboardOpening(true);
+        setDashboardError('');
+        try {
+            const handoffCode = await createDashboardHandoff();
+            window.electronAPI.openDashboard(handoffCode);
+        } catch (e: unknown) {
+            setDashboardError(e instanceof Error ? e.message : 'Unable to open your dashboard.');
+        } finally {
+            setDashboardOpening(false);
+        }
     };
 
     // Checkout warning modal
@@ -494,7 +516,7 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                             </div>
                         )}
 
-                        {error && <div className="form-error" style={{ width: '100%', textAlign: 'center' }}>{error}</div>}
+                        {(error || dashboardError) && <div className="form-error" style={{ width: '100%', textAlign: 'center' }}>{error || dashboardError}</div>}
 
                         <div className="tracker-actions">
                             <TimerActionButton
@@ -502,8 +524,8 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                                 title={status === 'stopped' ? 'Clock In' : 'Manage Breaks'}
                                 subtitle={status === 'stopped' ? 'Start your shift' : 'View & claim'}
                                 tone="success"
-                                onClick={status === 'stopped' ? handleClockInClick : () => window.electronAPI?.openDashboard?.()}
-                                disabled={actionLoading}
+                                onClick={status === 'stopped' ? handleClockInClick : () => { void handleOpenDashboard(); }}
+                                disabled={actionLoading || dashboardOpening}
                                 icon={status === 'stopped'
                                     ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>
                                     : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 5h16" /><path d="M4 12h16" /><path d="M4 19h16" /><circle cx="7" cy="5" r="1" /><circle cx="15" cy="12" r="1" /><circle cx="10" cy="19" r="1" /></svg>}
@@ -533,7 +555,8 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                     {/* Secondary navigation actions */}
                     <div className="tracker-secondary-actions">
                         <button
-                            onClick={() => window.electronAPI?.openDashboard?.()}
+                            onClick={() => { void handleOpenDashboard(); }}
+                            disabled={dashboardOpening}
                             style={{ display: 'flex', minWidth: 0, alignItems: 'center', gap: 9, border: '1px solid #d1fae5', borderRadius: 20, background: '#ffffff', color: '#1f2937', cursor: 'pointer', padding: '12px', textAlign: 'left', boxShadow: '0 3px 10px rgba(15, 23, 42, 0.04)' }}
                         >
                             <span style={{ display: 'inline-flex', width: 38, height: 38, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 13, background: '#ecfdf5', color: '#10b981' }}>

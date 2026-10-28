@@ -27,6 +27,7 @@ const tracker = require('./tracking/tracker');
 const screenshotScheduler = require('./tracking/screenshotScheduler');
 const wfhScreenMonitor = require('./tracking/wfhScreenMonitor');
 const { URL } = require('url');
+const { buildDashboardHandoffUrl } = require('./dashboardHandoff');
 
 function readRuntimeConfig() {
     try {
@@ -71,7 +72,9 @@ const runtimeConfig = readRuntimeConfig();
 const API_BASE = process.env.API_BASE || (isDev
     ? 'http://localhost:5005/api'
     : runtimeConfig.API_BASE || 'https://api.emptrakr.com/api');
-const WEB_BASE = process.env.WEB_BASE || runtimeConfig.WEB_BASE || 'https://emptrakr.com';
+const WEB_BASE = process.env.WEB_BASE || (isDev
+    ? 'http://localhost:3000'
+    : runtimeConfig.WEB_BASE || 'https://emptrakr.com');
 const START_EMBEDDED_BACKEND = process.env.START_EMBEDDED_BACKEND === 'true' || runtimeConfig.START_EMBEDDED_BACKEND === true;
 
 function createNoopAutoUpdater() {
@@ -674,9 +677,15 @@ app.whenReady().then(() => {
         console.log('[Auth] Opened browser login with deviceCode:', deviceCode);
     });
 
-    ipcMain.on('open-dashboard', () => {
-        shell.openExternal(new URL('/dashboard', WEB_BASE).toString());
-        console.log('[Auth] Opened browser dashboard');
+    ipcMain.on('open-dashboard', (_event, handoffCode) => {
+        try {
+            // The renderer obtains this short-lived code from the authenticated
+            // backend. Main validates it before opening the browser URL.
+            void shell.openExternal(buildDashboardHandoffUrl(WEB_BASE, handoffCode));
+        } catch {
+            // Do not log one-time handoff values or URLs.
+            console.warn('[Auth] Refused an invalid dashboard handoff request');
+        }
     });
 
     ipcMain.on('restart-app', () => {

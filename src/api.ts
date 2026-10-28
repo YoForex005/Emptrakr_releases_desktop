@@ -150,6 +150,19 @@ export async function getStatus(): Promise<TimeStatusResponse> {
     return data as TimeStatusResponse;
 }
 
+/** Create a short-lived grant that opens this desktop user's browser dashboard. */
+export async function createDashboardHandoff(): Promise<string> {
+    const res = await fetch(`${API_BASE}/auth/dashboard-handoff`, {
+        method: 'POST',
+        headers: authHeaders(),
+    });
+    const data = await handleResponse(res) as { code?: unknown };
+    if (typeof data.code !== 'string' || !/^[a-f0-9]{64}$/.test(data.code)) {
+        throw new Error('Unable to prepare your dashboard. Please try again.');
+    }
+    return data.code;
+}
+
 export async function startShift(workLocation: 'wfh' | 'office', commandId = crypto.randomUUID()) {
     const res = await fetch(`${API_BASE}/time/start`, {
         method: 'POST',

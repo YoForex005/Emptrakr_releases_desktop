@@ -755,7 +755,9 @@ body {
 .break-reminder-overlay {
   padding: 0;
   background: rgba(248, 250, 252, 0.96);
+  border-radius: 18px;
   backdrop-filter: blur(12px);
+  overflow: hidden;
 }
 
 .break-reminder-modal {
@@ -767,7 +769,7 @@ body {
   justify-content: center;
   padding: 30px 28px;
   border: 0;
-  border-radius: 0;
+  border-radius: 18px;
   background: transparent;
   box-shadow: none;
 }

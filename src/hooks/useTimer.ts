@@ -61,7 +61,7 @@ declare global {
             minimize: () => void;
             maximize: () => void;
             close: () => void;
-            openDashboard?: () => void;
+            openDashboard?: (handoffCode: string) => void;
             // Idle detection
             onIdleStart: (cb: (startTime: string) => void) => void;
             onIdleEnd: (cb: () => void) => void;
