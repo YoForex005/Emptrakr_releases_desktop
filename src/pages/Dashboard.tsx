@@ -1,9 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
+import {
+    createDashboardHandoff,
+    getBreakCredits,
+    requestBreakCredit,
+    type BreakCreditEntry,
+    type BreakCreditReason,
+    type BreakCreditReviewedDetail,
+} from '../api';
 import { useTimer, formatDuration } from '../hooks/useTimer';
 import { useAppTracker } from '../hooks/useAppTracker';
 import type { User } from '../types';
-
-const APP_LOGO_URL = `${import.meta.env.BASE_URL}logo.png`;
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
@@ -22,85 +28,49 @@ function StatusBadge({ status }: { status: string }) {
     );
 }
 
-function CompanyBrandHeader({ user }: { user: User }) {
-    const brandName = user.companyName?.trim() || 'EmpTrakr';
-    const logoUrl = user.companyLogoUrl?.trim() || APP_LOGO_URL;
+// ── ClockInLocationModal ──────────────────────────────────────────────────
+
+type TimerActionButtonProps = {
+    id: string;
+    title: string;
+    subtitle: string;
+    tone: 'success' | 'warning' | 'danger';
+    icon: ReactNode;
+    disabled: boolean;
+    onClick: () => void;
+};
+
+/** The three prominent timer actions used in the compact tracker view. */
+function TimerActionButton({ id, title, subtitle, tone, icon, disabled, onClick }: TimerActionButtonProps) {
+    const tones = {
+        success: { border: '#d1fae5', background: '#f7fffb', iconBackground: '#dcfce7', iconColor: '#059669', color: '#065f46' },
+        warning: { border: '#fde68a', background: '#fffdf5', iconBackground: '#fef3c7', iconColor: '#b45309', color: '#92400e' },
+        danger: { border: '#fecaca', background: '#fff8f8', iconBackground: '#fee2e2', iconColor: '#dc2626', color: '#b91c1c' },
+    } as const;
+    const style = tones[tone];
 
     return (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingBottom: 14, paddingTop: 4 }}>
-            <div style={{ display: 'flex', minWidth: 0, maxWidth: '100%', alignItems: 'center', gap: 12 }}>
-                {logoUrl && (
-                    <div
-                        style={{
-                            display: 'flex',
-                            flexShrink: 0,
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            width: 52,
-                            height: 52,
-                            overflow: 'hidden',
-                            borderRadius: 18,
-                            border: '1px solid rgba(226, 232, 240, 0.8)',
-                            background: 'rgba(248, 250, 252, 0.88)',
-                            boxShadow: '0 8px 22px rgba(15, 23, 42, 0.08)',
-                        }}
-                    >
-                        <img
-                            src={logoUrl}
-                            alt={`${brandName} logo`}
-                            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-                        />
-                    </div>
-                )}
-                <div style={{ minWidth: 0 }}>
-                    <div
-                        title={brandName}
-                        style={{
-                            maxWidth: 250,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                            fontSize: 18,
-                            fontWeight: 800,
-                            letterSpacing: '-0.02em',
-                            color: 'var(--text-primary)',
-                        }}
-                    >
-                        {brandName}
-                    </div>
-                    <div
-                        style={{
-                            marginTop: 2,
-                            fontSize: 10,
-                            fontWeight: 800,
-                            color: 'var(--accent-dark)',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.12em',
-                            lineHeight: 1,
-                        }}
-                    >
-                        Time Tracker
-                    </div>
-                    <div
-                        style={{
-                            marginTop: 4,
-                            fontSize: 8,
-                            fontWeight: 700,
-                            color: 'rgba(71, 85, 105, 0.58)',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.12em',
-                            lineHeight: 1,
-                        }}
-                    >
-                        Powered by EmpTrakr
-                    </div>
-                </div>
-            </div>
-        </div>
+        <button
+            id={id}
+            type="button"
+            onClick={onClick}
+            disabled={disabled}
+            style={{
+                display: 'flex', minWidth: 0, minHeight: 62, flex: 1, flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                gap: 6, border: `1px solid ${style.border}`, borderRadius: 16, background: style.background, color: style.color,
+                cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.48 : 1, padding: '12px 6px', transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+            }}
+            onMouseEnter={event => { if (!disabled) { event.currentTarget.style.transform = 'translateY(-1px)'; event.currentTarget.style.boxShadow = '0 8px 18px rgba(15, 23, 42, 0.08)'; } }}
+            onMouseLeave={event => { event.currentTarget.style.transform = 'none'; event.currentTarget.style.boxShadow = 'none'; }}
+        >
+            <span style={{ display: 'inline-flex', width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: 9, background: style.iconBackground, color: style.iconColor }}>
+                {icon}
+            </span>
+            <span style={{ fontSize: 12, fontWeight: 800, lineHeight: 1 }}>{title}</span>
+            <span style={{ fontSize: 10, fontWeight: 600, lineHeight: 1.1, color: '#94a3b8' }}>{subtitle}</span>
+        </button>
     );
 }
-
-// ── ClockInLocationModal ──────────────────────────────────────────────────
 
 function ClockInLocationModal({
     onSelect, onCancel
@@ -170,12 +140,171 @@ function ClockInLocationModal({
     );
 }
 
+const BREAK_REMINDER_THRESHOLD_SECS = 60;
+
+/** A persistent reminder shown while a continuous break exceeds one minute. */
+function BreakReminderModal({ breakSecs, onResume, resuming }: {
+    breakSecs: number;
+    onResume: () => void;
+    resuming: boolean;
+}) {
+    return (
+        <div className="modal-overlay break-reminder-overlay" role="dialog" aria-modal="true" aria-labelledby="break-reminder-title">
+            <div className="modal break-reminder-modal">
+                <div className="break-reminder-icon" role="img" aria-label="Break reminder">
+                    ☕
+                </div>
+                <h2 id="break-reminder-title" className="break-reminder-title">
+                    You are still on break
+                </h2>
+                <p className="break-reminder-description">
+                    Your current break has been running for
+                </p>
+                <div className="break-reminder-duration">
+                    <div className="break-reminder-duration__value">
+                        {formatDuration(breakSecs)}
+                    </div>
+                    <div className="break-reminder-duration__label">
+                        Break duration
+                    </div>
+                </div>
+                <button
+                    type="button"
+                    className="break-reminder-resume"
+                    onClick={onResume}
+                    disabled={resuming}
+                >
+                    {resuming ? 'Resuming…' : 'Resume'}
+                </button>
+            </div>
+        </div>
+    );
+}
+
 // ── CheckoutWarningModal ──────────────────────────────────────────────────
 
+const BREAK_CREDIT_REASONS: Array<{ value: BreakCreditReason; label: string }> = [
+    { value: 'MEETING_DURING_BREAK', label: 'Meeting during break' },
+    { value: 'CLIENT_CALL', label: 'Client call' },
+    { value: 'URGENT_TASK', label: 'Urgent issue / task' },
+    { value: 'MANAGER_REQUEST', label: 'Manager request' },
+    { value: 'OTHER_WORK', label: 'Other work reason' },
+];
+
+function formatBreakTime(value: string): string {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '--' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/** Employee-only panel for claiming a completed break as working time. */
+function BreakManagementModal({ onClose, onClaimSubmitted }: { onClose: () => void; onClaimSubmitted: () => void }) {
+    const [breaks, setBreaks] = useState<BreakCreditEntry[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+    const [selected, setSelected] = useState<BreakCreditEntry | null>(null);
+    const [reason, setReason] = useState<BreakCreditReason>('MEETING_DURING_BREAK');
+    const [submitting, setSubmitting] = useState(false);
+
+    useEffect(() => {
+        let active = true;
+        void getBreakCredits()
+            .then((entries) => { if (active) setBreaks(entries); })
+            .catch((requestError: unknown) => {
+                if (active) setError(requestError instanceof Error ? requestError.message : 'Unable to load today\'s breaks.');
+            })
+            .finally(() => { if (active) setLoading(false); });
+        return () => { active = false; };
+    }, []);
+
+    const submit = async () => {
+        if (!selected || submitting) return;
+        setSubmitting(true);
+        setError('');
+        try {
+            const updated = await requestBreakCredit(selected.id, reason);
+            setBreaks((current) => current.map((entry) => entry.id === updated.id ? updated : entry));
+            setSelected(null);
+            onClaimSubmitted();
+        } catch (requestError: unknown) {
+            setError(requestError instanceof Error ? requestError.message : 'Unable to submit this request.');
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const totalBreakSecs = breaks.reduce((sum, entry) => sum + entry.durationSecs, 0);
+    const requestedCount = breaks.filter((entry) => entry.creditStatus === 'PENDING').length;
+
+    return (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="break-management-title" style={{ background: 'rgba(15, 23, 42, 0.42)', backdropFilter: 'blur(7px)', padding: 12 }}>
+            <section className="modal" style={{ width: 'min(100%, 368px)', maxHeight: 'calc(100vh - 24px)', overflow: 'hidden', borderRadius: 24, background: '#fff', padding: 18, boxShadow: '0 24px 70px rgba(15, 23, 42, 0.28)' }}>
+                <header style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+                    <div>
+                        <h2 id="break-management-title" style={{ margin: 0, color: '#172033', fontSize: 17, fontWeight: 800 }}>Break Management</h2>
+                        <p style={{ margin: '3px 0 0', color: '#71819e', fontSize: 11, fontWeight: 600 }}>Request work-time credit for a completed break.</p>
+                    </div>
+                    <button type="button" aria-label="Close break management" onClick={onClose} style={{ width: 30, height: 30, border: 'none', borderRadius: 10, background: '#f1f5f9', color: '#94a3b8', cursor: 'pointer', fontSize: 21, lineHeight: 1 }}>×</button>
+                </header>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+                    <div style={{ border: '1px solid #dbe4f0', borderRadius: 12, background: '#f8fafc', padding: '9px 10px' }}>
+                        <div style={{ color: '#8190aa', fontSize: 10, fontWeight: 700 }}>Total break taken</div>
+                        <div style={{ color: '#1e293b', fontSize: 16, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{formatDuration(totalBreakSecs)}</div>
+                    </div>
+                    <div style={{ border: '1px solid #d1fae5', borderRadius: 12, background: '#f0fdf4', padding: '9px 10px' }}>
+                        <div style={{ color: '#8190aa', fontSize: 10, fontWeight: 700 }}>Awaiting review</div>
+                        <div style={{ color: '#059669', fontSize: 16, fontWeight: 800 }}>{requestedCount}</div>
+                    </div>
+                </div>
+
+                {error && <div role="alert" style={{ marginBottom: 10, borderRadius: 10, background: '#fef2f2', color: '#b91c1c', padding: '8px 10px', fontSize: 11, fontWeight: 600 }}>{error}</div>}
+
+                {selected ? (
+                    <div style={{ border: '1px solid #dbe4f0', borderRadius: 14, background: '#f8fafc', padding: 12 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                            <strong style={{ color: '#172033', fontSize: 13 }}>Break claim</strong>
+                            <button type="button" onClick={() => setSelected(null)} disabled={submitting} style={{ border: 'none', background: 'transparent', color: '#64748b', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>Cancel</button>
+                        </div>
+                        <p style={{ margin: '6px 0 10px', color: '#64748b', fontSize: 11 }}>{formatBreakTime(selected.startTime)} – {formatBreakTime(selected.endTime)} · {formatDuration(selected.durationSecs)}</p>
+                        <label htmlFor="break-credit-reason" style={{ display: 'block', color: '#475569', fontSize: 11, fontWeight: 700, marginBottom: 5 }}>Reason for work credit</label>
+                        <select id="break-credit-reason" value={reason} onChange={(event) => setReason(event.target.value as BreakCreditReason)} disabled={submitting} style={{ width: '100%', border: '1px solid #cbd5e1', borderRadius: 9, background: '#fff', color: '#334155', padding: '9px', fontSize: 12, fontWeight: 600 }}>
+                            {BREAK_CREDIT_REASONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                        </select>
+                        <button type="button" onClick={() => { void submit(); }} disabled={submitting} style={{ width: '100%', marginTop: 10, border: 'none', borderRadius: 10, background: '#2563eb', color: '#fff', cursor: submitting ? 'wait' : 'pointer', padding: '10px 12px', fontSize: 12, fontWeight: 800, opacity: submitting ? 0.7 : 1 }}>{submitting ? 'Submitting…' : 'Submit for admin approval'}</button>
+                    </div>
+                ) : (
+                    <>
+                        <p style={{ margin: '0 0 7px', color: '#8190aa', fontSize: 10, fontWeight: 800, letterSpacing: '0.06em' }}>TODAY’S BREAK SESSIONS</p>
+                        <div style={{ display: 'grid', gap: 8, maxHeight: 240, overflowY: 'auto', paddingRight: 2 }}>
+                            {loading && <div style={{ color: '#64748b', fontSize: 12, padding: '16px 0', textAlign: 'center' }}>Loading breaks…</div>}
+                            {!loading && breaks.length === 0 && <div style={{ color: '#64748b', fontSize: 12, padding: '16px 0', textAlign: 'center' }}>No completed manual breaks today.</div>}
+                            {breaks.map((entry, index) => {
+                                const canClaim = entry.creditStatus === 'NONE';
+                                const statusLabel = entry.creditStatus === 'PENDING' ? 'Awaiting approval' : entry.creditStatus === 'APPROVED' ? 'Credited as work' : entry.creditStatus === 'REJECTED' ? 'Rejected' : '';
+                                return <article key={entry.id} style={{ border: '1px solid #dbe4f0', borderRadius: 12, background: '#fff', padding: '9px 10px' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                        <div style={{ minWidth: 0, flex: 1 }}>
+                                            <div style={{ color: '#1e293b', fontSize: 12, fontWeight: 800 }}>Break #{breaks.length - index} <span style={{ color: '#64748b', fontSize: 10, fontWeight: 700 }}>{formatDuration(entry.durationSecs)}</span></div>
+                                            <div style={{ color: '#71819e', fontSize: 10, fontWeight: 600 }}>{formatBreakTime(entry.startTime)} – {formatBreakTime(entry.endTime)}</div>
+                                        </div>
+                                        {canClaim ? <button type="button" onClick={() => { setSelected(entry); setReason('MEETING_DURING_BREAK'); setError(''); }} style={{ border: 'none', borderRadius: 8, background: '#2563eb', color: '#fff', cursor: 'pointer', padding: '7px 9px', fontSize: 10, fontWeight: 800 }}>Claim credit</button> : <span style={{ maxWidth: 94, color: entry.creditStatus === 'APPROVED' ? '#059669' : entry.creditStatus === 'REJECTED' ? '#dc2626' : '#b45309', fontSize: 10, fontWeight: 800, textAlign: 'right' }}>{statusLabel}</span>}
+                                    </div>
+                                </article>;
+                            })}
+                        </div>
+                    </>
+                )}
+                {!selected && <button type="button" onClick={onClose} style={{ width: '100%', marginTop: 12, border: 'none', borderRadius: 10, background: '#f1f5f9', color: '#475569', cursor: 'pointer', padding: '10px 12px', fontSize: 12, fontWeight: 800 }}>Close</button>}
+            </section>
+        </div>
+    );
+}
+
 function CheckoutWarningModal({
-    remainingSecs, onProceed, onCancel
+    remainingSecs, expectedWorkSecs, onProceed, onCancel
 }: {
     remainingSecs: number;
+    expectedWorkSecs: number;
     onProceed: () => void;
     onCancel: () => void;
 }) {
@@ -200,7 +329,7 @@ function CheckoutWarningModal({
                     Not enough work hours
                 </h2>
                 <p style={{ fontSize: 13, color: '#64748b', textAlign: 'center', margin: '0 0 20px', fontWeight: 500 }}>
-                    You still need to work for
+                    Your {formatDuration(expectedWorkSecs)} work target has not been reached yet.
                 </p>
 
                 {/* Big remaining time display */}
@@ -295,13 +424,56 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
     const {
         status, loading, actionLoading, error,
         handleStart, handleBreak, handleStop,
-        todayWorked, todayBreakSecs: _todayBreakSecs, todayBreaksCount, todayIdleSecs,
-        expectedWorkSecs, expectedActiveSecs, maxBreaks,
+        todayWorked, todayBreakSecs: _todayBreakSecs, todayBreaksCount, currentBreakSecs, todayIdleSecs: _todayIdleSecs,
+        expectedWorkSecs, maxBreaks,
         workLocation,
     } = useTimer();
 
     // Clock-in location modal
     const [showLocationModal, setShowLocationModal] = useState(false);
+    const [showBreakManagement, setShowBreakManagement] = useState(false);
+    const [dashboardOpening, setDashboardOpening] = useState(false);
+    const [dashboardError, setDashboardError] = useState('');
+    const [dashboardNotice, setDashboardNotice] = useState('');
+
+    useEffect(() => {
+        const onBreakCreditReviewed = (event: Event) => {
+            const detail = (event as CustomEvent<BreakCreditReviewedDetail>).detail;
+            if (detail?.status === 'APPROVED') {
+                setDashboardError('');
+                setDashboardNotice('Your requested break time was approved and added to your working time.');
+            } else if (detail?.status === 'REJECTED') {
+                setDashboardNotice('');
+                setDashboardError('Your break-time request was not approved by your company administrator.');
+            }
+        };
+        window.addEventListener('wf:break-credit-reviewed', onBreakCreditReviewed);
+        return () => window.removeEventListener('wf:break-credit-reviewed', onBreakCreditReviewed);
+    }, []);
+
+    // A review can happen while the desktop app is closed. On its next start,
+    // show the same result for a completed break from the employee's current
+    // day instead of leaving the older "request sent" notice on screen.
+    useEffect(() => {
+        let active = true;
+        void getBreakCredits().then((entries) => {
+            if (!active) return;
+            const latestReviewed = entries
+                .filter((entry) => entry.creditStatus === 'APPROVED' || entry.creditStatus === 'REJECTED')
+                .sort((left, right) => new Date(right.creditReviewedAt ?? 0).getTime() - new Date(left.creditReviewedAt ?? 0).getTime())
+                .at(0);
+            if (latestReviewed?.creditStatus === 'APPROVED') {
+                setDashboardError('');
+                setDashboardNotice('Your requested break time was approved and added to your working time.');
+            } else if (latestReviewed?.creditStatus === 'REJECTED') {
+                setDashboardNotice('');
+                setDashboardError('Your break-time request was not approved by your company administrator.');
+            }
+        }).catch(() => {
+            // The regular dashboard remains usable if break-credit history is temporarily unavailable.
+        });
+        return () => { active = false; };
+    }, []);
 
     const handleClockInClick = () => setShowLocationModal(true);
     const handleLocationSelect = (location: 'wfh' | 'office') => {
@@ -309,35 +481,63 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
         handleStart(location);
     };
 
+    const handleOpenDashboard = async () => {
+        if (dashboardOpening) return;
+        if (!window.electronAPI?.openDashboard) {
+            setDashboardError('Dashboard access is available from the desktop app only.');
+            return;
+        }
+
+        setDashboardOpening(true);
+        setDashboardError('');
+        try {
+            const handoffCode = await createDashboardHandoff();
+            window.electronAPI.openDashboard(handoffCode);
+        } catch (e: unknown) {
+            setDashboardError(e instanceof Error ? e.message : 'Unable to open your dashboard.');
+        } finally {
+            setDashboardOpening(false);
+        }
+    };
+
     // Checkout warning modal
     const [showWarning, setShowWarning] = useState(false);
     const [remainingSecs, setRemainingSecs] = useState(0);
     const [proceedingStop, setProceedingStop] = useState(false);
+    const [completedShiftSecs, setCompletedShiftSecs] = useState<number | null>(null);
 
     // App close warning modal
     const [showCloseWarning, setShowCloseWarning] = useState(false);
 
     /** Called when user clicks "Check Out" button */
     const handleCheckoutClick = () => {
-        const activeSecs = Math.max(0, todayWorked - todayIdleSecs);
         const workShortfall = Math.max(0, expectedWorkSecs - todayWorked);
-        const activeShortfall = Math.max(0, expectedActiveSecs - activeSecs);
-        const maxShortfall = Math.max(workShortfall, activeShortfall);
-
-        if (maxShortfall > 0) {
-            setRemainingSecs(maxShortfall);
+        if (workShortfall > 0) {
+            setRemainingSecs(workShortfall);
             setShowWarning(true);
         } else {
-            handleStop(); // All criteria met — proceed immediately
+            void stopAndShowFinalTime();
         }
     };
 
     const confirmStop = async () => {
+        await stopAndShowFinalTime();
+    };
+
+    const stopAndShowFinalTime = async () => {
+        const finalWorkedSecs = todayWorked;
         setProceedingStop(true);
         setShowWarning(false);
-        await handleStop();
+        const stopped = await handleStop();
+        if (stopped) setCompletedShiftSecs(finalWorkedSecs);
         setProceedingStop(false);
     };
+
+    const displayedTimerSecs = status === 'stopped' && completedShiftSecs !== null
+        ? completedShiftSecs
+        : todayWorked;
+    const initial = user.name.trim().charAt(0).toUpperCase() || 'U';
+    const breakReminderVisible = status === 'on_break' && currentBreakSecs >= BREAK_REMINDER_THRESHOLD_SECS;
 
     // Close window logic
     useEffect(() => {
@@ -401,10 +601,26 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                 />
             )}
 
+            {breakReminderVisible && (
+                <BreakReminderModal
+                    breakSecs={currentBreakSecs}
+                    onResume={() => { void handleBreak(); }}
+                    resuming={actionLoading}
+                />
+            )}
+
+            {showBreakManagement && (
+                <BreakManagementModal
+                    onClose={() => setShowBreakManagement(false)}
+                    onClaimSubmitted={() => setDashboardNotice('Break credit request sent to your company administrator.')}
+                />
+            )}
+
             {/* Checkout warning modal */}
             {showWarning && (
                 <CheckoutWarningModal
                     remainingSecs={remainingSecs}
+                    expectedWorkSecs={expectedWorkSecs}
                     onProceed={confirmStop}
                     onCancel={() => setShowWarning(false)}
                 />
@@ -421,27 +637,36 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
             {/* ── TRACKER VIEW ─────────────────────────────────────────────── */}
             {view === 'tracker' && (
                 <>
-                    <CompanyBrandHeader user={user} />
-
+                    <div className="tracker-greeting">
+                        <div style={{ minWidth: 0 }}>
+                            <div className="tracker-greeting__title">
+                                Good morning, <span style={{ color: '#10b981' }}>{user.name.split(' ')[0]}</span>
+                            </div>
+                            <div className="tracker-greeting__subtitle">Have a productive day ahead!</div>
+                        </div>
+                        <div aria-label={`${user.name} profile`} className="tracker-profile">
+                            {initial}
+                        </div>
+                    </div>
                     {/* Timer Control Card */}
                     <div className="timer-card">
-                        {status === 'working' ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, marginBottom: 8 }}>
-                                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ filter: 'drop-shadow(0 4px 6px rgba(16, 185, 129, 0.3))' }}>
-                                    <circle cx="12" cy="12" r="10"></circle>
-                                    <polyline points="12 6 12 12 16 14"></polyline>
+                        <div className="tracker-timer-status">
+                            <span className="tracker-timer-icon">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <circle cx="12" cy="12" r="9"></circle>
+                                    <polyline points="12 7 12 12 15.5 14"></polyline>
                                 </svg>
-                            </div>
-                        ) : (
+                            </span>
                             <StatusBadge status={status} />
-                        )}
+                        </div>
 
-                        <div className={`timer-display ${status}`} id="timer-display">
-                            {formatDuration(todayWorked)}
+                        <div className={`timer-display ${status}`} id="timer-display" style={completedShiftSecs !== null && status === 'stopped' ? { color: '#10b981' } : undefined}>
+                            {formatDuration(displayedTimerSecs)}
                         </div>
 
                         <div className="timer-sub">
-                            {status === 'stopped' && 'Ready to work. Clock in when you start.'}
+                            {status === 'stopped' && completedShiftSecs !== null && 'Shift completed. Great work today!'}
+                            {status === 'stopped' && completedShiftSecs === null && 'Ready to work. Clock in when you start.'}
                             {status === 'working' && 'Shift in progress. Stay productive!'}
                             {status === 'on_break' && "Break in progress. Relax!"}
                         </div>
@@ -454,65 +679,82 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                             </div>
                         )}
 
-                        {error && <div className="form-error" style={{ width: '100%', textAlign: 'center' }}>{error}</div>}
+                        {status !== 'stopped' && workLocation === 'office' && (
+                            <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, background: '#eff6ff', color: '#2563eb', padding: '5px 10px', borderRadius: 999 }}>
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18" /><path d="M5 21V7l7-4 7 4v14" /><path d="M9 21v-6h6v6" /></svg>
+                                    Office Location
+                                </span>
+                            </div>
+                        )}
 
-                        <div className="timer-actions">
-                            <button
+                        {(error || dashboardError) && <div className="form-error" style={{ width: '100%', textAlign: 'center' }}>{error || dashboardError}</div>}
+                        {dashboardNotice && <div className="form-success" style={{ width: '100%', textAlign: 'center' }}>{dashboardNotice}</div>}
+
+                        <div className="tracker-actions">
+                            <TimerActionButton
                                 id="btn-check-in"
-                                className="btn btn-success"
-                                onClick={handleClockInClick}
-                                disabled={status !== 'stopped' || actionLoading}
-                                style={{ whiteSpace: 'nowrap' }}
-                            >
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-                                Clock In
-                            </button>
-
-                            <button
+                                title={status === 'stopped' ? 'Clock In' : 'Manage Breaks'}
+                                subtitle={status === 'stopped' ? 'Start your shift' : 'View & claim'}
+                                tone="success"
+                                onClick={status === 'stopped' ? handleClockInClick : () => { setDashboardError(''); setDashboardNotice(''); setShowBreakManagement(true); }}
+                                disabled={actionLoading}
+                                icon={status === 'stopped'
+                                    ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+                                    : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 5h16" /><path d="M4 12h16" /><path d="M4 19h16" /><circle cx="7" cy="5" r="1" /><circle cx="15" cy="12" r="1" /><circle cx="10" cy="19" r="1" /></svg>}
+                            />
+                            <TimerActionButton
                                 id="btn-break"
-                                className={`btn ${status === 'on_break' ? 'btn-primary' : 'btn-warning'}`}
+                                title={status === 'on_break' ? 'Resume' : 'Take Break'}
+                                subtitle={status === 'on_break' ? 'Continue working' : todayBreaksCount >= maxBreaks ? 'Break limit reached' : 'Start a break'}
+                                tone="warning"
                                 onClick={handleBreak}
                                 disabled={status === 'stopped' || actionLoading || (status !== 'on_break' && todayBreaksCount >= maxBreaks)}
-                                style={{ whiteSpace: 'nowrap' }}
-                            >
-                                {status === 'on_break' ? (
-                                    <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>Resume</>
-                                ) : (
-                                    <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>Break{todayBreaksCount >= maxBreaks ? ' (Max)' : ''}</>
-                                )}
-                            </button>
-
-                            <button
+                                icon={status === 'on_break'
+                                    ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+                                    : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>}
+                            />
+                            <TimerActionButton
                                 id="btn-check-out"
-                                className="btn btn-danger"
+                                title="Clock Out"
+                                subtitle="End your shift"
+                                tone="danger"
                                 onClick={handleCheckoutClick}
                                 disabled={status === 'stopped' || actionLoading || proceedingStop}
-                                style={{ whiteSpace: 'nowrap' }}
-                            >
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /></svg>
-                                Clock Out
-                            </button>
+                                icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /></svg>}
+                            />
                         </div>
                     </div>
-
-                    {/* View Dashboard & Logout (Beneath the timer) */}
-                    <div style={{ display: 'flex', justifyContent: 'center', gap: 16, marginTop: 16 }}>
+                    {/* Secondary navigation actions */}
+                    <div className="tracker-secondary-actions">
                         <button
-                            className="btn"
-                            onClick={() => (window.electronAPI as any)?.openDashboard?.()}
-                            style={{ flex: 1, padding: '10px', fontSize: 13, background: 'transparent', border: '1px solid #e2e8f0', color: '#64748b', borderRadius: '8px', cursor: 'pointer', fontWeight: 600 }}
+                            onClick={() => { void handleOpenDashboard(); }}
+                            disabled={dashboardOpening}
+                            style={{ display: 'flex', minWidth: 0, alignItems: 'center', gap: 9, border: '1px solid #d1fae5', borderRadius: 20, background: '#ffffff', color: '#1f2937', cursor: 'pointer', padding: '12px', textAlign: 'left', boxShadow: '0 3px 10px rgba(15, 23, 42, 0.04)' }}
                         >
-
-                            View Dashboard
+                            <span style={{ display: 'inline-flex', width: 38, height: 38, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 13, background: '#ecfdf5', color: '#10b981' }}>
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
+                            </span>
+                            <span style={{ minWidth: 0, flex: 1 }}>
+                                <span style={{ display: 'block', fontSize: 11, fontWeight: 800, lineHeight: 1.1 }}>View Dashboard</span>
+                                <span style={{ display: 'block', marginTop: 3, color: '#94a3b8', fontSize: 9, fontWeight: 600, lineHeight: 1 }}>Summary &amp; stats</span>
+                            </span>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                         </button>
                         <button
-                            className="btn btn-ghost"
                             onClick={onLogout}
                             disabled={status !== 'stopped'}
                             title={status !== 'stopped' ? 'Please clock out before logging out' : 'Logout'}
-                            style={{ flex: 1, padding: '10px', fontSize: 13, color: '#ef4444', background: 'transparent', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                            style={{ display: 'flex', minWidth: 0, alignItems: 'center', gap: 9, border: '1px solid #edf0f4', borderRadius: 20, background: '#fafbfc', color: '#94a3b8', cursor: status === 'stopped' ? 'pointer' : 'not-allowed', opacity: status === 'stopped' ? 1 : 0.72, padding: '12px', textAlign: 'left' }}
                         >
-                            Logout
+                            <span style={{ display: 'inline-flex', width: 38, height: 38, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 13, background: '#f1f5f9', color: '#94a3b8' }}>
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path d="M21 19V5a2 2 0 0 0-2-2h-6" /></svg>
+                            </span>
+                            <span style={{ minWidth: 0, flex: 1 }}>
+                                <span style={{ display: 'block', fontSize: 11, fontWeight: 800, lineHeight: 1.1 }}>Logout</span>
+                                <span style={{ display: 'block', marginTop: 3, fontSize: 9, fontWeight: 600, lineHeight: 1 }}>{status === 'stopped' ? 'End this session' : 'Clock out first'}</span>
+                            </span>
+                            {status !== 'stopped' && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>}
                         </button>
                     </div>
                 </>

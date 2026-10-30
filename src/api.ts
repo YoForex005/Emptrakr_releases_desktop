@@ -6,6 +6,45 @@ export type CompanyBrandChangedDetail = {
     companyLogoUrl: string | null;
 };
 
+export type AttendanceSettingsChangedDetail = {
+    maxBreaks?: number;
+    expectedWorkSecs?: number;
+    expectedActiveSecs?: number;
+    screenshotIntervalSecs?: number;
+    wfhScreenshotIntervalSecs?: number;
+    wfhCaptureIntervalMs?: number;
+    wfhScreenIdleThresholdSecs?: number;
+    wfhThumbWidth?: number;
+    wfhThumbHeight?: number;
+};
+
+export type BreakCreditReason =
+    | 'MEETING_DURING_BREAK'
+    | 'CLIENT_CALL'
+    | 'URGENT_TASK'
+    | 'MANAGER_REQUEST'
+    | 'OTHER_WORK';
+
+export type BreakCreditStatus = 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export type BreakCreditReviewedDetail = {
+    breakId: string;
+    status: 'APPROVED' | 'REJECTED';
+};
+
+export type BreakCreditEntry = {
+    id: string;
+    startTime: string;
+    endTime: string;
+    source: BreakSource;
+    durationSecs: number;
+    creditStatus: BreakCreditStatus;
+    creditReason: BreakCreditReason | null;
+    creditReasonLabel: string;
+    creditRequestedAt: string | null;
+    creditReviewedAt: string | null;
+};
+
 /**
  * Thrown whenever the backend returns 401 Unauthorized.
  * App.tsx listens for the custom 'wf:session-expired' event to
@@ -107,29 +146,55 @@ export async function getMe(): Promise<User> {
     return data.user;
 }
 
-export async function getStatus() {
+export type ShiftTimer = {
+    elapsedSecs: number;
+    workSecs: number;
+    breakSecs: number;
+    idleSecs: number;
+    activeSecs: number;
+};
+
+export type TimeStatusResponse = {
+    status: 'stopped' | 'working' | 'on_break';
+    shift: unknown;
+    serverNow?: string;
+    timer?: ShiftTimer;
+    trackingLease?: { onlineUntil?: string | null };
+    idleThresholdSecs: number;
+    expectedWorkSecs: number;
+    expectedActiveSecs: number;
+    maxBreaks: number;
+    screenshotIntervalSecs: number;
+    wfhCaptureIntervalMs?: number;
+    wfhScreenIdleThresholdSecs?: number;
+    wfhThumbWidth?: number;
+    wfhThumbHeight?: number;
+};
+
+export async function getStatus(): Promise<TimeStatusResponse> {
     const res = await fetch(`${API_BASE}/time/status`, { headers: authHeaders() });
     const data = await handleResponse(res);
-    return data as {
-        status: 'stopped' | 'working' | 'on_break';
-        shift: unknown;
-        idleThresholdSecs: number;
-        expectedWorkSecs: number;
-        expectedActiveSecs: number;
-        maxBreaks: number;
-        screenshotIntervalSecs: number;
-        wfhCaptureIntervalMs?: number;
-        wfhScreenIdleThresholdSecs?: number;
-        wfhThumbWidth?: number;
-        wfhThumbHeight?: number;
-    };
+    return data as TimeStatusResponse;
 }
 
-export async function startShift(workLocation: 'wfh' | 'office') {
+/** Create a short-lived grant that opens this desktop user's browser dashboard. */
+export async function createDashboardHandoff(): Promise<string> {
+    const res = await fetch(`${API_BASE}/auth/dashboard-handoff`, {
+        method: 'POST',
+        headers: authHeaders(),
+    });
+    const data = await handleResponse(res) as { code?: unknown };
+    if (typeof data.code !== 'string' || !/^[a-f0-9]{64}$/.test(data.code)) {
+        throw new Error('Unable to prepare your dashboard. Please try again.');
+    }
+    return data.code;
+}
+
+export async function startShift(workLocation: 'wfh' | 'office', commandId = crypto.randomUUID()) {
     const res = await fetch(`${API_BASE}/time/start`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ work_location: workLocation }),
+        body: JSON.stringify({ commandId, work_location: workLocation }),
     });
     return handleResponse(res);
 }
@@ -141,11 +206,11 @@ export async function toggleBreak() {
 
 export type BreakSource = 'manual' | 'screen_lock' | 'sleep';
 
-export async function startBreak(source: BreakSource = 'manual') {
+export async function startBreak(shiftId: string, source: BreakSource = 'manual', commandId = crypto.randomUUID()) {
     const res = await fetch(`${API_BASE}/time/break/start`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ source }),
+        body: JSON.stringify({ commandId, shiftId, source }),
     });
     return handleResponse(res) as Promise<{
         message: string;
@@ -154,11 +219,15 @@ export async function startBreak(source: BreakSource = 'manual') {
     }>;
 }
 
-export async function endBreak(options: { source?: BreakSource; breakId?: string } = {}) {
+export async function endBreak(
+    shiftId: string,
+    options: { source?: BreakSource; breakId?: string } = {},
+    commandId = crypto.randomUUID(),
+) {
     const res = await fetch(`${API_BASE}/time/break/end`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify(options),
+        body: JSON.stringify({ commandId, shiftId, ...options }),
     });
     return handleResponse(res) as Promise<{
         message: string;
@@ -168,20 +237,20 @@ export async function endBreak(options: { source?: BreakSource; breakId?: string
     }>;
 }
 
-export async function stopShift(reason?: string, endTime?: string) {
-    const hasPayload = !!reason || !!endTime;
+export async function stopShift(shiftId: string, reason?: string, endTime?: string, commandId = crypto.randomUUID()) {
     const res = await fetch(`${API_BASE}/time/stop`, {
         method: 'POST',
         headers: authHeaders(),
-        body: hasPayload ? JSON.stringify({ reason, endTime }) : undefined,
+        body: JSON.stringify({ commandId, shiftId, reason, endTime }),
     });
     return handleResponse(res);
 }
 
-export async function rolloverShift() {
+export async function rolloverShift(shiftId: string, commandId = crypto.randomUUID()) {
     const res = await fetch(`${API_BASE}/time/rollover`, {
         method: 'POST',
         headers: authHeaders(),
+        body: JSON.stringify({ commandId, shiftId }),
     });
     return handleResponse(res) as Promise<{
         message: string;
@@ -192,8 +261,12 @@ export async function rolloverShift() {
     }>;
 }
 
-export async function sendHeartbeat() {
-    const res = await fetch(`${API_BASE}/time/heartbeat`, { method: 'POST', headers: authHeaders() });
+export async function sendHeartbeat(shiftId: string, commandId = crypto.randomUUID()) {
+    const res = await fetch(`${API_BASE}/time/heartbeat`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ commandId, shiftId }),
+    });
     return handleResponse(res);
 }
 
@@ -208,8 +281,33 @@ export async function getHistory() {
         checkoutReason?: string | null;
         graceAppliedSecs?: number;
         timeAdjustmentSecs?: number;
-        breaks: Array<{ id: string; startTime: string; endTime: string | null }>;
+        breaks: Array<{
+            id: string;
+            startTime: string;
+            endTime: string | null;
+            source?: BreakSource;
+            creditStatus?: BreakCreditStatus;
+        }>;
     }>;
+}
+
+/** Load completed manual breaks that can be submitted for an admin work credit. */
+export async function getBreakCredits(): Promise<BreakCreditEntry[]> {
+    const res = await fetch(`${API_BASE}/time/break-credits`, { headers: authHeaders() });
+    const data = await handleResponse(res) as { breaks?: unknown };
+    return Array.isArray(data.breaks) ? data.breaks as BreakCreditEntry[] : [];
+}
+
+/** Submit one completed break for company-admin review. */
+export async function requestBreakCredit(breakId: string, reason: BreakCreditReason): Promise<BreakCreditEntry> {
+    const res = await fetch(`${API_BASE}/time/break-credits/${encodeURIComponent(breakId)}/request`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ reason }),
+    });
+    const data = await handleResponse(res) as { break?: BreakCreditEntry };
+    if (!data.break) throw new Error('The break credit request was not returned by the server.');
+    return data.break;
 }
 
 
@@ -221,21 +319,24 @@ export async function getHistory() {
 /**
  * Notify the server that the user has gone idle.
  * @param startTime - The exact ISO timestamp when idleness began
- *                    (i.e., 60 seconds before this call is made).
+ *                    (i.e., when the configured idle threshold was reached).
+ * @param shiftId - The active shift that owns the idle interval.
  */
-export async function startIdleSession(startTime: string) {
+export async function startIdleSession(startTime: string, shiftId: string) {
     const res = await fetch(`${API_BASE}/time/idle/start`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ startTime }),
+        body: JSON.stringify({ commandId: crypto.randomUUID(), shiftId, startTime }),
     });
-    // 409 = idle session already open — not a client error
-    if (res.status === 409) return res.json();
     return handleResponse(res);
 }
 
-export async function endIdleSession() {
-    const res = await fetch(`${API_BASE}/time/idle/end`, { method: 'POST', headers: authHeaders() });
+export async function endIdleSession(shiftId: string) {
+    const res = await fetch(`${API_BASE}/time/idle/end`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ commandId: crypto.randomUUID(), shiftId }),
+    });
     return handleResponse(res);
 }
 
@@ -260,7 +361,9 @@ export async function getTodayIdleSecs(): Promise<number> {
  * @returns                  Cleanup function — call on component unmount
  */
 export function subscribeToThresholdEvents(
-    onThresholdChange: (secs: number) => void
+    onThresholdChange: (secs: number) => void,
+    onAttendanceSettingsChange?: (settings: AttendanceSettingsChangedDetail) => void,
+    onBreakCreditReviewed?: (update: BreakCreditReviewedDetail) => void,
 ): () => void {
     const token = getToken();
     if (!token) return () => { }; // not logged in
@@ -288,6 +391,33 @@ export function subscribeToThresholdEvents(
                     companyLogoUrl: typeof payload.companyLogoUrl === 'string' ? payload.companyLogoUrl : null,
                 },
             }));
+        } catch { /* malformed event - ignore */ }
+    });
+
+    source.addEventListener('attendance-settings-changed', (e: MessageEvent) => {
+        try {
+            const parsed: unknown = JSON.parse(e.data);
+            if (!parsed || typeof parsed !== 'object') return;
+            onAttendanceSettingsChange?.(parsed as AttendanceSettingsChangedDetail);
+        } catch { /* malformed event - ignore */ }
+    });
+
+    source.addEventListener('break-credit-reviewed', (e: MessageEvent) => {
+        try {
+            const parsed: unknown = JSON.parse(e.data);
+            if (!parsed || typeof parsed !== 'object') return;
+            const update = parsed as { breakId?: unknown; status?: unknown };
+            if (
+                typeof update.breakId === 'string' &&
+                (update.status === 'APPROVED' || update.status === 'REJECTED')
+            ) {
+                const detail: BreakCreditReviewedDetail = { breakId: update.breakId, status: update.status };
+                // The timer hook refreshes its authoritative totals through the
+                // callback. This event lets the visible dashboard replace the
+                // temporary "request sent" message with the review outcome.
+                window.dispatchEvent(new CustomEvent<BreakCreditReviewedDetail>('wf:break-credit-reviewed', { detail }));
+                onBreakCreditReviewed?.(detail);
+            }
         } catch { /* malformed event - ignore */ }
     });
 

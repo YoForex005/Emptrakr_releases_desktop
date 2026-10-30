@@ -25,13 +25,60 @@ interface DesktopSessionPayload extends User {
     idleThresholdSecs: number;
 }
 
+interface PairingInitResponse {
+    secret: string;
+}
+
+const DEVICE_ID_STORAGE_KEY = 'wf_pairing_device_id';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const PAIRING_SECRET_PATTERN = /^[a-f0-9]{64}$/;
+
+function getOrCreateDeviceId(): string {
+    const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (existing && UUID_PATTERN.test(existing)) return existing;
+
+    const deviceId = crypto.randomUUID();
+    localStorage.setItem(DEVICE_ID_STORAGE_KEY, deviceId);
+    return deviceId;
+}
+
+async function initializePairing(code: string, deviceId: string): Promise<string> {
+    const response = await fetch(`${API_BASE}/auth/desktop-session/init`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, deviceId }),
+    });
+    const payload = await response.json().catch(() => null) as PairingInitResponse | { error?: string } | null;
+    if (!response.ok || !payload || !('secret' in payload) || !PAIRING_SECRET_PATTERN.test(payload.secret)) {
+        const message = payload && 'error' in payload && typeof payload.error === 'string'
+            ? payload.error
+            : 'Unable to start secure desktop sign-in. Please try again.';
+        throw new Error(message);
+    }
+    return payload.secret;
+}
+
+async function acknowledgePairing(code: string, secret: string, token: string): Promise<void> {
+    await fetch(`${API_BASE}/auth/desktop-session/${code}/ack`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'x-pairing-secret': secret,
+        },
+    });
+}
+
 export default function LoginPage({ onLogin }: LoginPageProps) {
     const deviceCode = useRef<string>(crypto.randomUUID());
+    const deviceId = useRef<string>(getOrCreateDeviceId());
+    const pairingSecret = useRef<string | null>(null);
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const sessionConsumedRef = useRef(false);
 
     const [waiting, setWaiting] = useState(false);
     const [expired, setExpired] = useState(false);
+    const [starting, setStarting] = useState(false);
+    const [pairingError, setPairingError] = useState<string | null>(null);
 
     const clearPolling = useCallback(() => {
         if (pollRef.current) {
@@ -41,7 +88,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     }, []);
 
     const completeLogin = useCallback(
-        (data: DesktopSessionPayload) => {
+        (data: DesktopSessionPayload, code: string, secret: string) => {
             if (sessionConsumedRef.current) return;
             sessionConsumedRef.current = true;
             clearPolling();
@@ -68,6 +115,10 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             api?.setIdleThreshold?.(threshold);
             api?.setTrackerAuthToken?.(data.token);
 
+            void acknowledgePairing(code, secret, data.token).catch(() => {
+                // Login remains valid if acknowledgement is interrupted; the server
+                // expires the short-lived pairing record automatically.
+            });
             onLogin(user, data.token);
         },
         [clearPolling, onLogin]
@@ -76,18 +127,29 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     const pollDesktopSession = useCallback(
         async (code: string) => {
             if (sessionConsumedRef.current) return;
+            const secret = pairingSecret.current;
+            if (!secret) return;
             try {
-                const res = await fetch(`${API_BASE}/auth/desktop-session/${code}`);
+                const res = await fetch(`${API_BASE}/auth/desktop-session/${code}`, {
+                    headers: { 'x-pairing-secret': secret },
+                });
                 if (res.status === 404) return;
                 if (res.status === 410) {
                     clearPolling();
+                    pairingSecret.current = null;
                     setExpired(true);
                     setWaiting(false);
                     return;
                 }
-                if (!res.ok) return;
+                if (!res.ok) {
+                    clearPolling();
+                    pairingSecret.current = null;
+                    setPairingError('Secure desktop sign-in could not continue. Start a new sign-in from the desktop app.');
+                    setWaiting(false);
+                    return;
+                }
                 const data = (await res.json()) as DesktopSessionPayload;
-                completeLogin(data);
+                completeLogin(data, code, secret);
             } catch {
                 // Retry on next tick.
             }
@@ -123,27 +185,46 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         return () => api.removeAuthCallbackListeners?.();
     }, [waiting, expired, pollDesktopSession]);
 
-    const handleOpenBrowser = () => {
-        const code = deviceCode.current;
-        const api = window.electronAPI as { openLogin?: (deviceCode: string) => void } | undefined;
-        if (api?.openLogin) {
-            api.openLogin(code);
-        } else {
-            window.open(
-                `${WEB_BASE}/login?desktopCode=${encodeURIComponent(code)}&returnTo=desktop`,
-                '_blank'
-            );
-        }
-        sessionConsumedRef.current = false;
+    const handleOpenBrowser = async () => {
+        if (starting) return;
+
+        setStarting(true);
+        clearPolling();
+        setPairingError(null);
         setExpired(false);
-        setWaiting(true);
+        sessionConsumedRef.current = false;
+
+        try {
+            const code = crypto.randomUUID();
+            const secret = await initializePairing(code, deviceId.current);
+            deviceCode.current = code;
+            pairingSecret.current = secret;
+
+            const api = window.electronAPI as { openLogin?: (deviceCode: string) => void } | undefined;
+            if (api?.openLogin) {
+                api.openLogin(code);
+            } else {
+                window.open(
+                    `${WEB_BASE}/login?desktopCode=${encodeURIComponent(code)}&returnTo=desktop`,
+                    '_blank'
+                );
+            }
+            setWaiting(true);
+        } catch (error) {
+            pairingSecret.current = null;
+            setPairingError(error instanceof Error ? error.message : 'Unable to start desktop sign-in.');
+        } finally {
+            setStarting(false);
+        }
     };
 
     const handleRetry = () => {
         clearPolling();
         deviceCode.current = crypto.randomUUID();
+        pairingSecret.current = null;
         sessionConsumedRef.current = false;
         setExpired(false);
+        setPairingError(null);
         setWaiting(false);
     };
 
@@ -166,6 +247,12 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                     <h1 style={{ letterSpacing: '0.15em', background: 'var(--accent-gradient)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>EmpTrakr</h1>
                     <p>Time Tracker Widget</p>
                 </div>
+
+                {pairingError && (
+                    <div style={{ fontSize: 13, color: 'var(--danger)', margin: '0 0 18px' }}>
+                        {pairingError}
+                    </div>
+                )}
 
                 {expired ? (
                     <>
@@ -237,6 +324,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                             id="btn-open-login"
                             className="btn btn-primary"
                             onClick={handleOpenBrowser}
+                            disabled={starting}
                             style={{ width: '100%', justifyContent: 'center', gap: 8, fontSize: 15 }}
                         >
                             <svg
@@ -253,7 +341,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                                 <polyline points="15 3 21 3 21 9" />
                                 <line x1="10" y1="14" x2="21" y2="3" />
                             </svg>
-                            Open Login in Browser
+                            {starting ? 'Preparing secure sign-in...' : 'Open Login in Browser'}
                         </button>
 
                         <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 14 }}>

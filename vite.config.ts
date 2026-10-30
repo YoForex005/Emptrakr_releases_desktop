@@ -8,4 +8,7 @@ export default defineConfig({
   // via file:// protocol. Without this, /assets/... resolves from the
   // filesystem root instead of the app directory → blank white/black screen.
   base: './',
+  // Keep the desktop renderer separate from the Admin Vite server (5173).
+  // `strictPort` ensures Electron never attaches to an unrelated app.
+  server: { host: '127.0.0.1', port: 5174, strictPort: true },
 })

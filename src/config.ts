@@ -6,7 +6,7 @@
  */
 
 const DEFAULT_API_BASE = import.meta.env.DEV
-    ? 'http://localhost:3005/api'
+    ? 'http://localhost:5005/api'
     : 'https://api.emptrakr.com/api';
 
 const DEFAULT_WEB_BASE = 'https://emptrakr.com';

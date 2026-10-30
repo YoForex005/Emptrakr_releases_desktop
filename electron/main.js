@@ -22,10 +22,12 @@ let autoUpdater = null;
 const axios = require('axios');
 const path = require('path');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const tracker = require('./tracking/tracker');
 const screenshotScheduler = require('./tracking/screenshotScheduler');
 const wfhScreenMonitor = require('./tracking/wfhScreenMonitor');
 const { URL } = require('url');
+const { buildDashboardHandoffUrl } = require('./dashboardHandoff');
 
 function readRuntimeConfig() {
     try {
@@ -67,8 +69,12 @@ const APP_ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
 const APP_ICON = nativeImage.createFromPath(APP_ICON_PATH);
 const WINDOW_ICON = APP_ICON.isEmpty() ? APP_ICON_PATH : APP_ICON;
 const runtimeConfig = readRuntimeConfig();
-const API_BASE = process.env.API_BASE || runtimeConfig.API_BASE || 'https://api.emptrakr.com/api';
-const WEB_BASE = process.env.WEB_BASE || runtimeConfig.WEB_BASE || 'https://emptrakr.com';
+const API_BASE = process.env.API_BASE || (isDev
+    ? 'http://localhost:5005/api'
+    : runtimeConfig.API_BASE || 'https://api.emptrakr.com/api');
+const WEB_BASE = process.env.WEB_BASE || (isDev
+    ? 'http://localhost:3000'
+    : runtimeConfig.WEB_BASE || 'https://emptrakr.com');
 const START_EMBEDDED_BACKEND = process.env.START_EMBEDDED_BACKEND === 'true' || runtimeConfig.START_EMBEDDED_BACKEND === true;
 
 function createNoopAutoUpdater() {
@@ -130,6 +136,7 @@ let allowWindowClose = false;
 // without waiting for the renderer (which may be too slow before network drops).
 // Updated by the renderer via 'update-shift-status' IPC whenever status changes.
 let currentShiftStatus = 'stopped'; // 'stopped' | 'working' | 'on_break'
+let currentShiftId = null;
 let sleepBreakStarted = false;      // true if THIS sleep triggered a break
 let isWfhMode = false;              // true when active shift has workLocation === 'wfh'
 let quitIntentInFlight = false;
@@ -165,6 +172,7 @@ function normalizeAuthToken(token) {
 
 async function sendDisconnectIntent(reason) {
     if (!sessionAuthToken) return;
+    if (!currentShiftId) return;
     if (disconnectIntentSent) return;
 
     disconnectIntentSent = true;
@@ -173,6 +181,8 @@ async function sendDisconnectIntent(reason) {
         await axios.post(
             `${API_BASE}/time/disconnect-intent`,
             {
+                commandId: crypto.randomUUID(),
+                shiftId: currentShiftId,
                 reason: reason || 'desktop_exit',
                 disconnectedAt: new Date().toISOString(),
             },
@@ -193,10 +203,11 @@ async function sendDisconnectIntent(reason) {
 
 async function sendBreakCommand(action, source, context) {
     if (!sessionAuthToken) return false;
+    if (!currentShiftId) return false;
     try {
         const response = await axios.post(
             `${API_BASE}/time/break/${action}`,
-            { source },
+            { commandId: crypto.randomUUID(), shiftId: currentShiftId, source },
             {
                 headers: {
                     'Content-Type': 'application/json',
@@ -410,24 +421,30 @@ function startScreenLockDetection() {
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 480,
-        height: 500,
-        minWidth: 420,
-        minHeight: 420,
+        // Fixed portrait 9:16 desktop widget.
+        // Compact floating tracker widget.
+        width: 400,
+        height: 520,
+        resizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        roundedCorners: true,
         frame: false,
         titleBarStyle: 'hidden',
+        transparent: true,
         icon: WINDOW_ICON,
         webPreferences: {
             nodeIntegration: false,     // security: no direct Node access in renderer
             contextIsolation: true,     // security: renderer and preload have separate contexts
             preload: path.join(__dirname, 'preload.js'),
-            // In dev the renderer loads from http://localhost:5173, which the production
+            // In dev the renderer loads from http://127.0.0.1:5174, which the production
             // backend's CORS list doesn't include. Disabling webSecurity removes the
             // browser-side CORS check so dev fetches reach the production API.
             // Production builds load from file:// (no origin) → CORS never applies there.
             webSecurity: !isDev,
         },
-        backgroundColor: '#0a0b0f',
+        // The renderer draws the visible rounded shell; the outer pixels stay transparent.
+        backgroundColor: '#00000000',
         show: false, // show only after ready-to-show to avoid white flash
     });
 
@@ -436,7 +453,7 @@ function createWindow() {
     }
 
     const startUrl = isDev
-        ? 'http://localhost:5173'
+        ? 'http://127.0.0.1:5174'
         : `file://${path.join(__dirname, '../dist/index.html')}`;
 
     mainWindow.loadURL(startUrl);
@@ -544,16 +561,22 @@ app.whenReady().then(() => {
         screenshotScheduler.clearAuthToken();
         sessionAuthToken = null;
         disconnectIntentSent = false;
+        currentShiftStatus = 'stopped';
+        currentShiftId = null;
     });
 
     // ── IPC: Shift Status Sync ────────────────────────────────────────────────
     // Renderer sends current shift status on every change so main.js always
     // knows whether the user is working/on_break/stopped before a suspend fires.
-    ipcMain.on('update-shift-status', (_event, status) => {
-        if (typeof status === 'string') {
-            currentShiftStatus = status;
-            console.log(`[Sleep] Shift status updated to '${currentShiftStatus}'`);
-        }
+    ipcMain.on('update-shift-status', (_event, payload) => {
+        const status = payload?.status;
+        const shiftId = payload?.shiftId;
+        if (!['stopped', 'working', 'on_break'].includes(status)) return;
+        if (status !== 'stopped' && (typeof shiftId !== 'string' || !/^[0-9a-f-]{36}$/i.test(shiftId))) return;
+
+        currentShiftStatus = status;
+        currentShiftId = status === 'stopped' ? null : shiftId;
+        console.log(`[Sleep] Shift status updated to '${currentShiftStatus}'`);
     });
 
     // ── IPC: Dynamic Idle Threshold (NEW — Admin Portal) ─────────────────────
@@ -654,9 +677,15 @@ app.whenReady().then(() => {
         console.log('[Auth] Opened browser login with deviceCode:', deviceCode);
     });
 
-    ipcMain.on('open-dashboard', () => {
-        shell.openExternal(new URL('/dashboard', WEB_BASE).toString());
-        console.log('[Auth] Opened browser dashboard');
+    ipcMain.on('open-dashboard', (_event, handoffCode) => {
+        try {
+            // The renderer obtains this short-lived code from the authenticated
+            // backend. Main validates it before opening the browser URL.
+            void shell.openExternal(buildDashboardHandoffUrl(WEB_BASE, handoffCode));
+        } catch {
+            // Do not log one-time handoff values or URLs.
+            console.warn('[Auth] Refused an invalid dashboard handoff request');
+        }
     });
 
     ipcMain.on('restart-app', () => {
