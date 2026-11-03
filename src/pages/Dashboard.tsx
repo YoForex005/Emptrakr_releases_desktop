@@ -504,7 +504,6 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
     const [showWarning, setShowWarning] = useState(false);
     const [remainingSecs, setRemainingSecs] = useState(0);
     const [proceedingStop, setProceedingStop] = useState(false);
-    const [completedShiftSecs, setCompletedShiftSecs] = useState<number | null>(null);
 
     // App close warning modal
     const [showCloseWarning, setShowCloseWarning] = useState(false);
@@ -525,17 +524,16 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
     };
 
     const stopAndShowFinalTime = async () => {
-        const finalWorkedSecs = todayWorked;
         setProceedingStop(true);
         setShowWarning(false);
-        const stopped = await handleStop();
-        if (stopped) setCompletedShiftSecs(finalWorkedSecs);
+        await handleStop();
         setProceedingStop(false);
     };
 
-    const displayedTimerSecs = status === 'stopped' && completedShiftSecs !== null
-        ? completedShiftSecs
-        : todayWorked;
+    // A stopped shift must not retain its completed duration in the live timer.
+    // The completed value remains available in shift history and reports; this
+    // widget is only for the currently active shift.
+    const displayedTimerSecs = todayWorked;
     const initial = user.name.trim().charAt(0).toUpperCase() || 'U';
     const breakReminderVisible = status === 'on_break' && currentBreakSecs >= BREAK_REMINDER_THRESHOLD_SECS;
 
@@ -660,13 +658,12 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
                             <StatusBadge status={status} />
                         </div>
 
-                        <div className={`timer-display ${status}`} id="timer-display" style={completedShiftSecs !== null && status === 'stopped' ? { color: '#10b981' } : undefined}>
+                        <div className={`timer-display ${status}`} id="timer-display">
                             {formatDuration(displayedTimerSecs)}
                         </div>
 
                         <div className="timer-sub">
-                            {status === 'stopped' && completedShiftSecs !== null && 'Shift completed. Great work today!'}
-                            {status === 'stopped' && completedShiftSecs === null && 'Ready to work. Clock in when you start.'}
+                            {status === 'stopped' && 'Ready to work. Clock in when you start.'}
                             {status === 'working' && 'Shift in progress. Stay productive!'}
                             {status === 'on_break' && "Break in progress. Relax!"}
                         </div>
