@@ -1,5 +1,5 @@
 const axios = require('axios');
-const os = require('os');
+const { randomUUID } = require('crypto');
 const path = require('path');
 
 function readRuntimeConfig() {
@@ -15,16 +15,6 @@ const API_BASE = process.env.API_BASE || (process.env.NODE_ENV === 'development'
     ? 'http://localhost:5005/api'
     : runtimeConfig.API_BASE || 'https://api.emptrakr.com/api');
 
-function getDefaultDeviceId() {
-    let username = 'unknown-user';
-    try {
-        username = os.userInfo().username || username;
-    } catch {
-        // Fall back to unknown user.
-    }
-    return `${os.hostname()}-${username}`;
-}
-
 async function getWorkStatus(authToken) {
     const res = await axios.get(`${API_BASE}/time/status`, {
         headers: {
@@ -32,7 +22,25 @@ async function getWorkStatus(authToken) {
         },
         timeout: 10000,
     });
-    return res.data?.status;
+    return {
+        status: res.data?.status ?? null,
+        shiftId: typeof res.data?.shift?.id === 'string' ? res.data.shift.id : null,
+    };
+}
+
+function buildScreenshotUploadPayload({ shiftId, capturedAt, display, imageBuffer, eventId = randomUUID() }) {
+    if (typeof shiftId !== 'string' || !shiftId.trim()) return null;
+    if (!(capturedAt instanceof Date) || Number.isNaN(capturedAt.getTime())) return null;
+    if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) return null;
+    if (typeof eventId !== 'string' || !/^[a-f0-9-]{36}$/i.test(eventId)) return null;
+
+    return {
+        eventId,
+        shiftId,
+        capturedAt: capturedAt.toISOString(),
+        display,
+        imageBase64: imageBuffer.toString('base64'),
+    };
 }
 
 async function uploadScreenshot(authToken, payload) {
@@ -46,8 +54,8 @@ async function uploadScreenshot(authToken, payload) {
 }
 
 module.exports = {
-    getDefaultDeviceId,
     getWorkStatus,
+    buildScreenshotUploadPayload,
     uploadScreenshot,
 };
 
