@@ -1,5 +1,5 @@
 const { captureCurrentMonitorPng } = require('./screenshotCapture');
-const { getDefaultDeviceId, getWorkStatus, uploadScreenshot } = require('./screenshotUploader');
+const { buildScreenshotUploadPayload, getWorkStatus, uploadScreenshot } = require('./screenshotUploader');
 const { describeHttpError } = require('./httpError');
 
 const IS_DEV = process.env.NODE_ENV === 'development';
@@ -16,8 +16,6 @@ let firstCaptureAfterAuth = false;
 let lastSuccessAt = null;
 let lastFailureAt = null;
 let lastFailureMessage = null;
-
-const deviceId = getDefaultDeviceId();
 
 function describeInterval(ms) {
     if (ms >= 60_000) return `${Math.round(ms / 60_000)} minute(s)`;
@@ -59,19 +57,23 @@ async function runCaptureCycle() {
 
     tickInFlight = true;
     try {
-        const status = await getWorkStatus(authToken);
-        if (status !== 'working') {
-            console.log(`[Screenshot] Skipping cycle: shift status is '${status || 'unknown'}'`);
+        const workStatus = await getWorkStatus(authToken);
+        if (workStatus.status !== 'working' || !workStatus.shiftId) {
+            console.log(`[Screenshot] Skipping cycle: active working shift is unavailable (status='${workStatus.status || 'unknown'}')`);
             return;
         }
 
         const capture = await captureCurrentMonitorPng();
-        const payload = {
-            capturedAt: new Date().toISOString(),
-            deviceId,
+        const payload = buildScreenshotUploadPayload({
+            shiftId: workStatus.shiftId,
+            capturedAt: new Date(),
             display: capture.display,
-            imageBase64: capture.imageBuffer.toString('base64'),
-        };
+            imageBuffer: capture.imageBuffer,
+        });
+        if (!payload) {
+            console.log('[Screenshot] Skipping cycle: capture context is invalid');
+            return;
+        }
 
         const response = await uploadScreenshot(authToken, payload);
         const screenshot = response?.data?.screenshot;
