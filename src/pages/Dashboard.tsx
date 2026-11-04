@@ -405,7 +405,7 @@ export default function Dashboard({ view, user, onLogout }: DashboardProps) {
         <div className="main">
             {status !== 'stopped' && !connection.connected && (
                 <div role="status" style={{ padding: 12, marginBottom: 12, background: '#fff7ed', color: '#9a3412', borderRadius: 8 }}>
-                    Tracking paused. {connection.reason || 'Waiting for the backend connection.'}
+                    Tracking paused. {connection.reason || 'Waiting for the backend connection.'} Time after tracking pauses is not counted. Reconnect to resume tracking; contact your admin if the pause was unexpected.
                 </div>
             )}
             {/* Clock-in location modal */}

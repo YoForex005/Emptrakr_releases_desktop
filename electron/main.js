@@ -616,18 +616,31 @@ app.whenReady().then(() => {
     });
     handleTrusted('api-request', async (_event, request) => {
         const token = sessionAuthToken;
+        const isHeartbeatRequest = request.method === 'POST' && request.path === '/time/heartbeat';
+        const renewsTrackingLease = request.method === 'POST'
+            && ['/time/heartbeat', '/time/start', '/time/rollover'].includes(request.path);
         if (request.method === 'POST' && request.path?.startsWith('/time/')) ++attendanceRevision;
         const revision = attendanceRevision;
         const bridgeRequest = request.path === '/time/heartbeat' && request.method === 'POST'
             ? { ...request } : request;
         let response;
         try { response = await attendance.request(bridgeRequest); }
-        catch (error) { if (token === sessionAuthToken) online.disconnect('Backend connection lost'); throw error; }
+        // Status reads and telemetry requests can fail independently of the
+        // heartbeat. Only a rejected heartbeat may shorten the local lease;
+        // otherwise an acknowledged server lease remains authoritative until
+        // it expires.
+        catch (error) { if (isHeartbeatRequest && token === sessionAuthToken) online.disconnect('Heartbeat request failed'); throw error; }
         if (token !== sessionAuthToken) return response;
         if (response.status === 401) { setSessionToken(null); tracker.clearTrackingData(); }
-        if (response.status >= 500) online.disconnect('Backend is unavailable');
+        if (isHeartbeatRequest && response.status >= 400) online.disconnect('Heartbeat was not accepted');
         if (response.status >= 200 && response.status < 300) {
             const data = JSON.parse(response.body);
+            // The command acknowledgement itself contains a server-issued
+            // lease. Preserve it even when the follow-up status read is late
+            // or temporarily unavailable.
+            if (renewsTrackingLease && data.trackingLease) {
+                online.confirm(data.trackingLease, response.roundTripMs, true);
+            }
             if (request.path === '/time/status' && revision === attendanceRevision) {
                 const context = data.ownedByThisDevice ? data : { status: 'stopped', shift: null };
                 currentShiftStatus = context.status; tracker.setTrackingContext(context); screenshotScheduler.setTrackingContext(context);
@@ -644,11 +657,14 @@ app.whenReady().then(() => {
                             const context = state.ownedByThisDevice ? state : { status: 'stopped', shift: null };
                             currentShiftStatus = context.status; tracker.setTrackingContext(context); screenshotScheduler.setTrackingContext(context);
                             if (state.ownedByThisDevice && state.shift) online.confirm(state.trackingLease, statusResponse.roundTripMs,
-                                ['/time/heartbeat', '/time/start', '/time/rollover'].includes(request.path));
+                                renewsTrackingLease);
                             else { online.disconnect('No active shift'); clearQueues(); }
                         }
                     }
-                } catch { if (token === sessionAuthToken) online.disconnect('Unable to confirm shift status'); }
+                // The acknowledgement above already renewed the lease. A
+                // follow-up read refreshes UI state only and cannot revoke
+                // server-confirmed time.
+                } catch { /* reconciled by the next main-process heartbeat */ }
             }
             if (request.path === '/auth/logout') { setSessionToken(null); tracker.clearTrackingData(); }
         }

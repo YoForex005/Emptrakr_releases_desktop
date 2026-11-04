@@ -18,7 +18,7 @@ import { getDateKeyInTimeZone, getUtcDayBounds } from '../timezones';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-    getStatus, startShift, startBreak, endBreak, stopShift, getHistory, sendHeartbeat,
+    getStatus, startShift, startBreak, endBreak, stopShift, getHistory,
     endIdleSession, getTodayIdleSecs,
     rolloverShift,
     type BreakSource,
@@ -412,31 +412,6 @@ export function useTimer() {
         }, 30_000);
         return () => clearInterval(interval);
     }, [fetchStatus]);
-
-    // Keep the active shift alive. If the app reconnects within 10 minutes,
-    // backend clears pending disconnect and keeps the same shift running.
-    useEffect(() => {
-        if (status !== 'working' && status !== 'on_break') return;
-
-        const tickHeartbeat = async () => {
-            try {
-                await sendHeartbeat();
-                await fetchStatus();
-            } catch {
-                // A late heartbeat may have closed the shift. Read status even
-                // after rejection so the UI requires a new explicit clock-in.
-                await fetchStatus();
-            }
-        };
-
-        void tickHeartbeat(); // run immediately on state change
-        const interval = window.setInterval(() => {
-            void tickHeartbeat();
-        }, 20_000);
-
-        return () => clearInterval(interval);
-    }, [status, fetchStatus]);
-
 
     // ── Shift status sync to main process ──────────────────────────────────────
     // Keep main.js informed so it can guard the sleep break correctly.

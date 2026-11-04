@@ -34,10 +34,14 @@ class DeliveryQueue {
                 } catch (error) {
                     const status = error?.response?.status;
                     if ([400, 413, 422].includes(status)) { if (this.items[0] === item) this.items.shift(); continue; }
-                    if (!status || status === 401 || status === 403) {
-                        online.disconnect('Backend connection lost'); this.clear();
-                        if (status === 401 || status === 403) throw error;
-                        break;
+                    // A usage or screenshot upload is not a heartbeat. A
+                    // transient telemetry failure must never end a server
+                    // confirmed attendance period. The heartbeat coordinator
+                    // owns that decision; it will stop tracking when its
+                    // server lease actually expires.
+                    if (status === 401 || status === 403) {
+                        this.clear();
+                        throw error;
                     }
                     this.failures++;
                     this.retryAt = Date.now() + Math.min(10000, 1000 * 2 ** Math.min(this.failures, 4));
