@@ -1,48 +1,22 @@
 import { API_BASE } from './config';
 import type { User } from './types';
 
+
+export async function apiRequest(path: string, options: RequestInit = {}): Promise<Response> {
+    const bridge = window.electronAPI?.requestApi;
+    if (!bridge) return fetch(API_BASE + path, { ...options, signal: options.signal || AbortSignal.timeout(15000) });
+    const response = await bridge({ path, method: options.method || 'GET', body: options.body, headers: Object.fromEntries(new Headers(options.headers).entries()) });
+    return new Response(response.body, { status: response.status, headers: response.headers });
+}
+export async function logoutSession() {
+    const response = await apiRequest('/auth/logout', { method: 'POST', headers: authHeaders() });
+    await handleResponse(response);
+    setAuthToken(null);
+}
+
 export type CompanyBrandChangedDetail = {
     companyName: string;
     companyLogoUrl: string | null;
-};
-
-export type AttendanceSettingsChangedDetail = {
-    maxBreaks?: number;
-    expectedWorkSecs?: number;
-    expectedActiveSecs?: number;
-    screenshotIntervalSecs?: number;
-    wfhScreenshotIntervalSecs?: number;
-    wfhCaptureIntervalMs?: number;
-    wfhScreenIdleThresholdSecs?: number;
-    wfhThumbWidth?: number;
-    wfhThumbHeight?: number;
-};
-
-export type BreakCreditReason =
-    | 'MEETING_DURING_BREAK'
-    | 'CLIENT_CALL'
-    | 'URGENT_TASK'
-    | 'MANAGER_REQUEST'
-    | 'OTHER_WORK';
-
-export type BreakCreditStatus = 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
-
-export type BreakCreditReviewedDetail = {
-    breakId: string;
-    status: 'APPROVED' | 'REJECTED';
-};
-
-export type BreakCreditEntry = {
-    id: string;
-    startTime: string;
-    endTime: string;
-    source: BreakSource;
-    durationSecs: number;
-    creditStatus: BreakCreditStatus;
-    creditReason: BreakCreditReason | null;
-    creditReasonLabel: string;
-    creditRequestedAt: string | null;
-    creditReviewedAt: string | null;
 };
 
 /**
@@ -51,28 +25,10 @@ export type BreakCreditEntry = {
  * clear state and redirect to the login screen automatically.
  */
 export class SessionExpiredError extends Error {
-    constructor() {
-        super('Session expired — please log in again.');
+    constructor(message = 'Session expired — please log in again.') {
+        super(message);
         this.name = 'SessionExpiredError';
     }
-}
-
-export class ApiError extends Error {
-    status: number;
-
-    constructor(status: number, message: string) {
-        super(message);
-        this.name = 'ApiError';
-        this.status = status;
-    }
-}
-
-function expireSavedSession(): never {
-    localStorage.removeItem('wf_token');
-    localStorage.removeItem('wf_user');
-    localStorage.removeItem('wf_idle_threshold');
-    window.dispatchEvent(new Event('wf:session-expired'));
-    throw new SessionExpiredError();
 }
 
 /**
@@ -80,33 +36,78 @@ function expireSavedSession(): never {
  * - 401 → clears localStorage, fires 'wf:session-expired', throws SessionExpiredError
  * - Other errors → throws with the server's error message
  */
+async function parseJson(res: Response) {
+    const ct = res.headers.get('content-type') ?? '';
+    if (!ct.includes('application/json')) {
+        throw new Error(`Server returned ${res.status} (non-JSON response)`);
+    }
+    return res.json();
+}
+
 async function handleResponse(res: Response) {
-    const text = await res.text();
-    let data: any = {};
-    if (text) {
-        try {
-            data = JSON.parse(text);
-        } catch {
-            data = { error: text };
-        }
+    const denial = [401, 403].includes(res.status) ? await res.clone().json().catch(() => ({})) : null;
+    if (res.status === 401 || denial?.code === 'EMPLOYMENT_ENDED') {
+        setAuthToken(null);
+        localStorage.removeItem('wf_user');
+        localStorage.removeItem('wf_idle_threshold');
+        window.dispatchEvent(new CustomEvent('wf:session-expired', { detail: { code: denial?.code } }));
+        throw new SessionExpiredError(denial?.code === 'EMPLOYMENT_ENDED' ? 'Your employment has ended. Contact your administrator.' : undefined);
     }
-    if (res.status === 401) {
-        expireSavedSession();
-    }
-    if (res.status === 404 && typeof data.error === 'string' && /user not found/i.test(data.error)) {
-        expireSavedSession();
-    }
-    if (!res.ok) {
-        const fallback = res.status === 409
-            ? 'Shift state changed. Syncing latest status.'
-            : `Request failed with HTTP ${res.status}`;
-        throw new ApiError(res.status, data.error || data.message || fallback);
-    }
+    const data = await parseJson(res);
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
 }
 
-function getToken(): string | null {
-    return localStorage.getItem('wf_token');
+let memoryToken: string | null = null;
+
+function hasElectronStorage(): boolean {
+    return typeof window !== 'undefined' && Boolean(window.electronAPI?.secureStoreToken);
+}
+
+export function setAuthToken(token: string | null) {
+    memoryToken = token;
+    const isElectron = hasElectronStorage();
+    if (token) {
+        if (isElectron) {
+            // Keep strictly in volatile memory and OS DPAPI store; clear any legacy localStorage key
+            localStorage.removeItem('wf_token');
+            window.electronAPI?.secureStoreToken(token).catch(() => {});
+        } else {
+            localStorage.setItem('wf_token', token);
+        }
+    } else {
+        localStorage.removeItem('wf_token');
+        if (isElectron) {
+            window.electronAPI?.secureClearToken().catch(() => {});
+        }
+    }
+}
+
+export function getToken(): string | null {
+    if (memoryToken) return memoryToken;
+    if (!hasElectronStorage()) {
+        const stored = localStorage.getItem('wf_token');
+        if (stored) {
+            memoryToken = stored;
+            return stored;
+        }
+    }
+    return null;
+}
+
+export async function syncSecureToken(): Promise<string | null> {
+    if (typeof window !== 'undefined' && window.electronAPI?.secureGetToken) {
+        try {
+            const secureToken = await window.electronAPI.secureGetToken();
+            if (secureToken) {
+                setAuthToken(secureToken);
+                return secureToken;
+            }
+        } catch {
+            // Fall back to localStorage
+        }
+    }
+    return getToken();
 }
 
 function authHeaders() {
@@ -118,99 +119,79 @@ function authHeaders() {
 
 
 export async function login(email: string, password: string) {
-    const res = await fetch(`${API_BASE}/auth/login`, {
+    const res = await apiRequest(`/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, desktop: true }),
     });
-    const data = await res.json();
+    const data = await parseJson(res);
     if (!res.ok) throw new Error(data.error || 'Login failed');
 
     // NOTE: idleThresholdSecs is now returned by the backend (set by admin per user).
     // We persist it to localStorage so useAppTracker.ts can read it on every poll.
-    if (data.user?.idleThresholdSecs !== undefined) {
-        localStorage.setItem('wf_idle_threshold', String(data.user.idleThresholdSecs));
-    }
+
 
     return data as { token: string; user: User & { idleThresholdSecs: number } };
 }
 
 export async function getMe(): Promise<User> {
-    const res = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() });
+    const res = await apiRequest(`/auth/me`, { headers: authHeaders() });
     const data = await handleResponse(res) as { user: User & { idleThresholdSecs?: number } };
 
-    if (data.user?.idleThresholdSecs !== undefined) {
-        localStorage.setItem('wf_idle_threshold', String(data.user.idleThresholdSecs));
-    }
+
 
     return data.user;
 }
 
-export type ShiftTimer = {
-    elapsedSecs: number;
-    workSecs: number;
-    breakSecs: number;
-    idleSecs: number;
-    activeSecs: number;
-};
-
-export type TimeStatusResponse = {
-    status: 'stopped' | 'working' | 'on_break';
-    shift: unknown;
-    serverNow?: string;
-    timer?: ShiftTimer;
-    trackingLease?: { onlineUntil?: string | null };
-    idleThresholdSecs: number;
-    expectedWorkSecs: number;
-    expectedActiveSecs: number;
-    maxBreaks: number;
-    screenshotIntervalSecs: number;
-    wfhCaptureIntervalMs?: number;
-    wfhScreenIdleThresholdSecs?: number;
-    wfhThumbWidth?: number;
-    wfhThumbHeight?: number;
-};
-
-export async function getStatus(): Promise<TimeStatusResponse> {
-    const res = await fetch(`${API_BASE}/time/status`, { headers: authHeaders() });
+export async function getStatus() {
+    const res = await apiRequest(`/time/status`, { headers: authHeaders() });
     const data = await handleResponse(res);
-    return data as TimeStatusResponse;
+    return data as {
+        timezone?: string;
+        status: 'stopped' | 'working' | 'on_break';
+        shift: unknown;
+        autoCheckout?: { shiftId: string; endedAt: string; reason: string | null } | null;
+        serverNow?: string;
+        trackingLease?: { supported: boolean; serverNow: string; onlineUntil: string | null };
+        timer?: {
+            elapsedSecs: number;
+            breakSecs: number;
+            workSecs: number;
+            idleSecs: number;
+            activeSecs: number;
+        };
+        idleThresholdSecs: number;
+        expectedWorkSecs: number;
+        expectedActiveSecs: number;
+        maxBreaks: number;
+        screenshotIntervalSecs: number;
+        wfhCaptureIntervalMs?: number;
+        wfhScreenIdleThresholdSecs?: number;
+        wfhThumbWidth?: number;
+        wfhThumbHeight?: number;
+    };
 }
 
-/** Create a short-lived grant that opens this desktop user's browser dashboard. */
-export async function createDashboardHandoff(): Promise<string> {
-    const res = await fetch(`${API_BASE}/auth/dashboard-handoff`, {
-        method: 'POST',
-        headers: authHeaders(),
-    });
-    const data = await handleResponse(res) as { code?: unknown };
-    if (typeof data.code !== 'string' || !/^[a-f0-9]{64}$/.test(data.code)) {
-        throw new Error('Unable to prepare your dashboard. Please try again.');
-    }
-    return data.code;
-}
-
-export async function startShift(workLocation: 'wfh' | 'office', commandId = crypto.randomUUID()) {
-    const res = await fetch(`${API_BASE}/time/start`, {
+export async function startShift(workLocation: 'wfh' | 'office') {
+    const res = await apiRequest(`/time/start`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ commandId, work_location: workLocation }),
+        body: JSON.stringify({ work_location: workLocation }),
     });
     return handleResponse(res);
 }
 
 export async function toggleBreak() {
-    const res = await fetch(`${API_BASE}/time/break`, { method: 'POST', headers: authHeaders() });
-    return handleResponse(res);
+    throw new Error('Break toggling is retired; use an explicit start or end action');
 }
 
 export type BreakSource = 'manual' | 'screen_lock' | 'sleep';
 
-export async function startBreak(shiftId: string, source: BreakSource = 'manual', commandId = crypto.randomUUID()) {
-    const res = await fetch(`${API_BASE}/time/break/start`, {
+export async function startBreak(source: BreakSource = 'manual') {
+    const res = await apiRequest(`/time/break/start`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ commandId, shiftId, source }),
+        body: JSON.stringify({ source }),
     });
     return handleResponse(res) as Promise<{
         message: string;
@@ -219,15 +200,11 @@ export async function startBreak(shiftId: string, source: BreakSource = 'manual'
     }>;
 }
 
-export async function endBreak(
-    shiftId: string,
-    options: { source?: BreakSource; breakId?: string } = {},
-    commandId = crypto.randomUUID(),
-) {
-    const res = await fetch(`${API_BASE}/time/break/end`, {
+export async function endBreak(options: { source?: BreakSource; breakId?: string } = {}) {
+    const res = await apiRequest(`/time/break/end`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ commandId, shiftId, ...options }),
+        body: JSON.stringify(options),
     });
     return handleResponse(res) as Promise<{
         message: string;
@@ -237,20 +214,20 @@ export async function endBreak(
     }>;
 }
 
-export async function stopShift(shiftId: string, reason?: string, endTime?: string, commandId = crypto.randomUUID()) {
-    const res = await fetch(`${API_BASE}/time/stop`, {
+export async function stopShift(reason?: string, endTime?: string) {
+    const hasPayload = !!reason || !!endTime;
+    const res = await apiRequest(`/time/stop`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ commandId, shiftId, reason, endTime }),
+        body: hasPayload ? JSON.stringify({ reason, endTime }) : undefined,
     });
     return handleResponse(res);
 }
 
-export async function rolloverShift(shiftId: string, commandId = crypto.randomUUID()) {
-    const res = await fetch(`${API_BASE}/time/rollover`, {
+export async function rolloverShift() {
+    const res = await apiRequest(`/time/rollover`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ commandId, shiftId }),
     });
     return handleResponse(res) as Promise<{
         message: string;
@@ -261,17 +238,13 @@ export async function rolloverShift(shiftId: string, commandId = crypto.randomUU
     }>;
 }
 
-export async function sendHeartbeat(shiftId: string, commandId = crypto.randomUUID()) {
-    const res = await fetch(`${API_BASE}/time/heartbeat`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify({ commandId, shiftId }),
-    });
+export async function sendHeartbeat() {
+    const res = await apiRequest(`/time/heartbeat`, { method: 'POST', headers: authHeaders() });
     return handleResponse(res);
 }
 
 export async function getHistory() {
-    const res = await fetch(`${API_BASE}/time/history`, { headers: authHeaders() });
+    const res = await apiRequest(`/time/history`, { headers: authHeaders() });
     const data = await handleResponse(res);
     return data.shifts as Array<{
         id: string;
@@ -281,33 +254,8 @@ export async function getHistory() {
         checkoutReason?: string | null;
         graceAppliedSecs?: number;
         timeAdjustmentSecs?: number;
-        breaks: Array<{
-            id: string;
-            startTime: string;
-            endTime: string | null;
-            source?: BreakSource;
-            creditStatus?: BreakCreditStatus;
-        }>;
+        breaks: Array<{ id: string; startTime: string; endTime: string | null }>;
     }>;
-}
-
-/** Load completed manual breaks that can be submitted for an admin work credit. */
-export async function getBreakCredits(): Promise<BreakCreditEntry[]> {
-    const res = await fetch(`${API_BASE}/time/break-credits`, { headers: authHeaders() });
-    const data = await handleResponse(res) as { breaks?: unknown };
-    return Array.isArray(data.breaks) ? data.breaks as BreakCreditEntry[] : [];
-}
-
-/** Submit one completed break for company-admin review. */
-export async function requestBreakCredit(breakId: string, reason: BreakCreditReason): Promise<BreakCreditEntry> {
-    const res = await fetch(`${API_BASE}/time/break-credits/${encodeURIComponent(breakId)}/request`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify({ reason }),
-    });
-    const data = await handleResponse(res) as { break?: BreakCreditEntry };
-    if (!data.break) throw new Error('The break credit request was not returned by the server.');
-    return data.break;
 }
 
 
@@ -319,111 +267,40 @@ export async function requestBreakCredit(breakId: string, reason: BreakCreditRea
 /**
  * Notify the server that the user has gone idle.
  * @param startTime - The exact ISO timestamp when idleness began
- *                    (i.e., when the configured idle threshold was reached).
- * @param shiftId - The active shift that owns the idle interval.
+ *                    (i.e., 60 seconds before this call is made).
  */
-export async function startIdleSession(startTime: string, shiftId: string) {
-    const res = await fetch(`${API_BASE}/time/idle/start`, {
+export async function startIdleSession(startTime: string) {
+    const res = await apiRequest(`/time/idle/start`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ commandId: crypto.randomUUID(), shiftId, startTime }),
+        body: JSON.stringify({ startTime }),
     });
+    // 409 = idle session already open — not a client error
+    if (res.status === 409) return parseJson(res);
     return handleResponse(res);
 }
 
-export async function endIdleSession(shiftId: string) {
-    const res = await fetch(`${API_BASE}/time/idle/end`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify({ commandId: crypto.randomUUID(), shiftId }),
-    });
+export async function endIdleSession() {
+    const res = await apiRequest(`/time/idle/end`, { method: 'POST', headers: authHeaders() });
     return handleResponse(res);
 }
 
 export async function getTodayIdleSecs(): Promise<number> {
-    const res = await fetch(`${API_BASE}/time/idle/today`, { headers: authHeaders() });
+    const res = await apiRequest(`/time/idle/today`, { headers: authHeaders() });
     const data = await handleResponse(res);
     return (data as { totalIdleSecs: number }).totalIdleSecs;
 }
 
 
-/**
- * Open a Server-Sent Events connection to receive real-time threshold changes.
- *
- * The backend pushes an `idle-threshold-changed` event every time an admin
- * saves a new idleThresholdSecs for this user — arrives in milliseconds.
- *
- * EventSource does NOT support custom Authorization headers, so we pass the
- * token as a query param. The backend auth middleware already accepts this.
- * EventSource auto-reconnects on network drops.
- *
- * @param onThresholdChange  Called with the new threshold (seconds) on change
- * @returns                  Cleanup function — call on component unmount
- */
+// Settings refresh through the authenticated main-process API bridge.
 export function subscribeToThresholdEvents(
-    onThresholdChange: (secs: number) => void,
-    onAttendanceSettingsChange?: (settings: AttendanceSettingsChangedDetail) => void,
-    onBreakCreditReviewed?: (update: BreakCreditReviewedDetail) => void,
+    onThresholdChange: (secs: number) => void
 ): () => void {
     const token = getToken();
     if (!token) return () => { }; // not logged in
 
-    const url = `${API_BASE}/time/events?token=${encodeURIComponent(token)}`;
-    const source = new EventSource(url);
-
-    source.addEventListener('idle-threshold-changed', (e: MessageEvent) => {
-        try {
-            const { idleThresholdSecs } = JSON.parse(e.data) as { idleThresholdSecs: number };
-            if (typeof idleThresholdSecs === 'number') {
-                onThresholdChange(idleThresholdSecs);
-            }
-        } catch { /* malformed event — ignore */ }
-    });
-
-    source.addEventListener('company-brand-changed', (e: MessageEvent) => {
-        try {
-            const payload = JSON.parse(e.data) as Partial<CompanyBrandChangedDetail>;
-            if (typeof payload.companyName !== 'string') return;
-
-            window.dispatchEvent(new CustomEvent<CompanyBrandChangedDetail>('wf:company-brand-changed', {
-                detail: {
-                    companyName: payload.companyName,
-                    companyLogoUrl: typeof payload.companyLogoUrl === 'string' ? payload.companyLogoUrl : null,
-                },
-            }));
-        } catch { /* malformed event - ignore */ }
-    });
-
-    source.addEventListener('attendance-settings-changed', (e: MessageEvent) => {
-        try {
-            const parsed: unknown = JSON.parse(e.data);
-            if (!parsed || typeof parsed !== 'object') return;
-            onAttendanceSettingsChange?.(parsed as AttendanceSettingsChangedDetail);
-        } catch { /* malformed event - ignore */ }
-    });
-
-    source.addEventListener('break-credit-reviewed', (e: MessageEvent) => {
-        try {
-            const parsed: unknown = JSON.parse(e.data);
-            if (!parsed || typeof parsed !== 'object') return;
-            const update = parsed as { breakId?: unknown; status?: unknown };
-            if (
-                typeof update.breakId === 'string' &&
-                (update.status === 'APPROVED' || update.status === 'REJECTED')
-            ) {
-                const detail: BreakCreditReviewedDetail = { breakId: update.breakId, status: update.status };
-                // The timer hook refreshes its authoritative totals through the
-                // callback. This event lets the visible dashboard replace the
-                // temporary "request sent" message with the review outcome.
-                window.dispatchEvent(new CustomEvent<BreakCreditReviewedDetail>('wf:break-credit-reviewed', { detail }));
-                onBreakCreditReviewed?.(detail);
-            }
-        } catch { /* malformed event - ignore */ }
-    });
-
-    source.onerror = () => {
-        // EventSource will auto-reconnect; no action needed
-    };
-
-    return () => source.close();
+    // Settings use the existing bounded status poll; tokens never enter URLs.
+    void token;
+    const timer = setInterval(() => { void getStatus().then(data => onThresholdChange(data.idleThresholdSecs)).catch(() => {}); }, 30000);
+    return () => clearInterval(timer);
 }

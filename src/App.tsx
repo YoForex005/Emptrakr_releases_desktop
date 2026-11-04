@@ -3,41 +3,25 @@ import './index.css';
 import LoginPage from './pages/LoginPage';
 import Dashboard from './pages/Dashboard';
 import Titlebar from './components/Titlebar';
-import { getMe } from './api';
+import { getMe, setAuthToken, syncSecureToken, getToken, logoutSession } from './api';
 import type { CompanyBrandChangedDetail } from './api';
 import type { User } from './types';
 
-function getSavedUser(): User | null {
-    const raw = localStorage.getItem('wf_user');
-    if (!raw) return null;
-
-    try {
-        const parsed = JSON.parse(raw) as Partial<User>;
-        if (
-            typeof parsed.id === 'string' &&
-            typeof parsed.name === 'string' &&
-            typeof parsed.email === 'string'
-        ) {
-            return {
-                id: parsed.id,
-                name: parsed.name,
-                email: parsed.email,
-                companyId: typeof parsed.companyId === 'string' ? parsed.companyId : undefined,
-                companyName: typeof parsed.companyName === 'string' ? parsed.companyName : undefined,
-                companyLogoUrl: typeof parsed.companyLogoUrl === 'string' ? parsed.companyLogoUrl : null,
-            };
-        }
-        return null;
-    } catch {
-        return null;
-    }
-}
+// Retire the old employee profile cache on upgrade. Profiles stay in React memory.
+localStorage.removeItem('wf_user');
+localStorage.removeItem('wf_idle_threshold');
 
 function App() {
-    const savedToken = localStorage.getItem('wf_token');
+    const [user, setUser] = useState<User | null>(null);
+    const [token, setToken] = useState<string | null>(() => getToken());
+    const [logoutError, setLogoutError] = useState('');
+    const [sessionMessage, setSessionMessage] = useState('');
 
-    const [user, setUser] = useState<User | null>(getSavedUser());
-    const [token, setToken] = useState<string | null>(savedToken);
+    useEffect(() => {
+        syncSecureToken().then((t) => {
+            if (t) setToken(t);
+        });
+    }, []);
     const [version, setVersion] = useState<string>('');
     const [otaStatus, setOtaStatus] = useState<string>('');
     const [readyVersion, setReadyVersion] = useState<string>('');
@@ -47,7 +31,7 @@ function App() {
 
     // Fetch app version on mount
     useEffect(() => {
-        const api = (window as any).electronAPI;
+        const api = window.electronAPI;
         if (api?.getAppVersion) {
             api.getAppVersion().then((v: string) => setVersion(v));
         }
@@ -91,7 +75,7 @@ function App() {
     const handleRestart = () => {
         setIsRestarting(true);
         setTimeout(() => {
-            const api = (window as any).electronAPI;
+            const api = window.electronAPI;
             if (api?.restartApp) {
                 api.restartApp();
             }
@@ -129,7 +113,7 @@ function App() {
                 const freshUser = await getMe();
                 if (cancelled) return;
                 setUser(freshUser);
-                localStorage.setItem('wf_user', JSON.stringify(freshUser));
+
             } catch (err) {
                 if (!cancelled) {
                     console.warn('[Auth] Unable to refresh user profile', err);
@@ -159,7 +143,7 @@ function App() {
                     companyName: detail.companyName,
                     companyLogoUrl: detail.companyLogoUrl,
                 };
-                localStorage.setItem('wf_user', JSON.stringify(next));
+
                 return next;
             });
         };
@@ -170,21 +154,31 @@ function App() {
 
     // Auto-logout on token expiry. api.ts fires 'wf:session-expired' on 401.
     useEffect(() => {
-        const onExpired = () => {
+        const end = (code?: string) => {
+            setAuthToken(null);
+            setSessionMessage(code === 'EMPLOYMENT_ENDED' ? 'Your employment has ended. Contact your administrator.' : 'Session expired. Please sign in again.');
             setUser(null);
             setToken(null);
         };
+        const onExpired = (event: Event) => end((event as CustomEvent<{ code?: string }>).detail?.code);
         window.addEventListener('wf:session-expired', onExpired);
-        return () => window.removeEventListener('wf:session-expired', onExpired);
+        const unsubscribe = window.electronAPI?.onSessionEnded?.(detail => end(detail.code));
+        return () => { window.removeEventListener('wf:session-expired', onExpired); unsubscribe?.(); };
     }, []);
 
     const handleLogin = (u: User, t: string) => {
+        setSessionMessage('');
         setUser(u);
         setToken(t);
     };
 
-    const handleLogout = () => {
-        localStorage.removeItem('wf_token');
+    const handleLogout = async () => {
+        setLogoutError('');
+        try { await logoutSession(); } catch {
+            setLogoutError('Unable to sign out. Check your connection and try again.');
+            return;
+        }
+        setAuthToken(null);
         localStorage.removeItem('wf_user');
         setUser(null);
         setToken(null);
@@ -193,7 +187,8 @@ function App() {
     if (!user || !token) {
         return (
             <>
-                <Titlebar />
+                <Titlebar userName="Guest" />
+                {sessionMessage && <p role="alert" style={{ color: 'var(--danger)', margin: '8px 16px' }}>{sessionMessage}</p>}
                 <LoginPage onLogin={handleLogin} />
                 {version && (
                     <div className="version-tag">v {version}</div>
@@ -204,7 +199,8 @@ function App() {
 
     return (
         <>
-            <Titlebar />
+            <Titlebar userName={user.name} />
+            {logoutError && <p role="alert" style={{ color: 'var(--danger)', margin: '8px 16px', fontSize: 12 }}>{logoutError}</p>}
             <Dashboard view="tracker" user={user} onLogout={handleLogout} />
 
             {version && (

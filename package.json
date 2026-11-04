@@ -1,26 +1,39 @@
 {
   "name": "emptrakr-desktop",
   "private": true,
-  "version": "1.2.33",
+  "version": "1.2.34",
   "description": "EmpTrakr Desktop Application",
   "author": "EmpTrakr",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
+    "postinstall": "node scripts/ensure-electron.cjs",
+    "electron:ensure": "node scripts/ensure-electron.cjs",
+    "electron:repair": "node scripts/ensure-electron.cjs --force",
     "dev:react": "vite",
-    "dev:electron": "wait-on http://127.0.0.1:5174 && node scripts/dev-electron.cjs",
-    "dev": "node scripts/run-dev-service.cjs --name Desktop --url http://127.0.0.1:5174/ -- npm run dev:desktop",
-    "dev:desktop": "concurrently \"npm run dev:react\" \"npm run dev:electron\"",
+    "dev:electron": "node scripts/ensure-electron.cjs && wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .",
+    "dev": "node scripts/ensure-electron.cjs && concurrently \"npm run dev:react\" \"npm run dev:electron\"",
     "build": "tsc -b && vite build",
-    "electron:build": "cross-env VITE_API_BASE=https://api.emptrakr.com/api VITE_WEB_BASE=https://emptrakr.com npm run build && cross-env API_BASE=https://api.emptrakr.com/api WEB_BASE=https://emptrakr.com node scripts/write-electron-config.cjs && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
-    "electron:build:mac": "cross-env VITE_API_BASE=https://api.emptrakr.com/api VITE_WEB_BASE=https://emptrakr.com npm run build && cross-env API_BASE=https://api.emptrakr.com/api WEB_BASE=https://emptrakr.com node scripts/write-electron-config.cjs && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --x64 --arm64",
-    "electron:build:mac:signed": "cross-env VITE_API_BASE=https://api.emptrakr.com/api VITE_WEB_BASE=https://emptrakr.com npm run build && cross-env API_BASE=https://api.emptrakr.com/api WEB_BASE=https://emptrakr.com node scripts/write-electron-config.cjs && cross-env CSC_IDENTITY_AUTO_DISCOVERY=true electron-builder --mac",
-    "electron:publish": "cross-env VITE_API_BASE=https://api.emptrakr.com/api VITE_WEB_BASE=https://emptrakr.com npm run build && cross-env API_BASE=https://api.emptrakr.com/api WEB_BASE=https://emptrakr.com node scripts/write-electron-config.cjs && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win -p always",
-    "preview": "vite preview"
+    "electron:build": "node scripts/ensure-electron.cjs && npm run build && node scripts/write-electron-config.cjs && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --publish never",
+    "electron:build:signed": "node scripts/validate-signing.cjs && node scripts/ensure-electron.cjs && npm run build && electron-builder --config electron-builder.release.cjs --win --publish never",
+    "electron:build:mac": "node scripts/ensure-electron.cjs && npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --x64 --arm64 --publish never",
+    "electron:build:mac:signed": "node scripts/validate-signing.cjs && node scripts/ensure-electron.cjs && npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=true electron-builder --config electron-builder.release.cjs --mac --x64 --arm64 --publish never && node scripts/notarize-mac-installers.cjs",
+    "electron:publish": "node scripts/validate-release.cjs && node scripts/validate-backend.cjs && node scripts/publish-desktop-release.cjs",
+    "release:check": "node scripts/validate-release.cjs",
+    "preview": "vite preview",
+    "predev": "node scripts/write-electron-config.cjs --development",
+    "predev:electron": "node scripts/write-electron-config.cjs --development",
+    "prebuild": "node scripts/write-electron-config.cjs",
+    "test": "node --test tests/*.test.js",
+    "backend:check": "node scripts/validate-backend.cjs",
+    "lint": "eslint src"
+  },
+  "engines": {
+    "node": ">=22 <25"
   },
   "dependencies": {
     "active-win": "^7.7.2",
-    "axios": "^1.13.5",
+    "axios": "^1.20.0",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.8.3",
     "react": "^19.2.0",
@@ -33,9 +46,9 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
-    "concurrently": "^9.2.1",
+    "concurrently": "^9.2.5",
     "cross-env": "^7.0.3",
-    "electron": "^40.6.0",
+    "electron": "^44.5.1",
     "electron-builder": "^26.8.1",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
@@ -46,6 +59,10 @@
     "vite": "^7.3.1",
     "wait-on": "^9.0.4"
   },
+  "overrides": {
+    "http-cache-semantics": "4.3.0",
+    "source-map-js": "1.2.2"
+  },
   "build": {
     "appId": "com.yohrmx.timetracker",
     "productName": "EmpTrakr",
@@ -53,16 +70,11 @@
       {
         "provider": "github",
         "owner": "YoForex005",
-        "repo": "Emptrakr_releases_desktop",
-        "releaseType": "release"
+        "repo": "Emptrakr_releases_desktop"
       }
     ],
     "directories": {
       "output": "release"
-    },
-    "afterPack": "scripts/after-pack.cjs",
-    "toolsets": {
-      "winCodeSign": "1.1.0"
     },
     "icon": "build/icon.ico",
     "files": [
@@ -70,7 +82,7 @@
       "electron/**/*"
     ],
     "win": {
-      "signAndEditExecutable": false,
+      "signAndEditExecutable": true,
       "target": [
         {
           "target": "nsis",
@@ -82,10 +94,11 @@
     },
     "mac": {
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
       "category": "public.app-category.business",
-      "identity": null,
+      "hardenedRuntime": true,
       "icon": "build/icon.icns"
     },
     "nsis": {

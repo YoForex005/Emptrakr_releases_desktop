@@ -1,0 +1,95 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+function load(electron, platform = 'win32', extras = {}) {
+    const module = { exports: {} };
+    const source = fs.readFileSync(new URL('../electron/tracking/screenshotCapture.js', import.meta.url), 'utf8');
+    vm.runInNewContext(source, { module, exports: module.exports, Buffer, process: { platform }, console: { warn() {} },
+        require(name) { if (name === 'electron') return electron; if (extras[name]) return extras[name]; throw new Error('Unexpected dependency ' + name); } });
+    return module.exports;
+}
+test('native capture includes every display and matches metadata by display ID', async () => {
+    const displays = [{ id: 11, scaleFactor: 1, bounds: { width: 100, height: 80, x: 0, y: 0 } }, { id: 22, scaleFactor: 2, bounds: { width: 200, height: 100, x: -200, y: 0 } }];
+    const sources = displays.map(display => ({ display_id: String(display.id), thumbnail: { isEmpty: () => false, toPNG: () => Buffer.from(String(display.id)), getSize: () => ({ width: display.bounds.width, height: display.bounds.height }) } })).reverse();
+    const capture = load({ screen: { getAllDisplays: () => displays, getPrimaryDisplay: () => displays[1] }, desktopCapturer: { getSources: async () => sources } }, 'win32', { child_process: {} });
+    const all = await capture.captureAllMonitorsPng();
+    assert.equal(all.length, 2);
+    assert.equal(all[0].display.displayId, '11');
+    assert.equal(all[1].display.x, -200);
+    assert.equal(all[1].imageBuffer.toString(), '22');
+    assert.equal((await capture.captureCurrentMonitorPng()).display.displayId, '22');
+});
+test('blank Electron thumbnails use the Windows native capture fallback', async () => {
+    const display = { id: 1, scaleFactor: 1, bounds: { width: 100, height: 80, x: 0, y: 0 } };
+    const blankThumbnail = {
+        isEmpty: () => false,
+        toBitmap: () => Buffer.alloc(100 * 80 * 4),
+        toPNG: () => Buffer.alloc(10),
+        getSize: () => ({ width: 100, height: 80 }),
+    };
+    const fallbackImage = {
+        toBitmap: () => Buffer.from([32, 48, 64, 255, 64, 96, 128, 255]),
+        toPNG: () => Buffer.from('fallback'),
+        getSize: () => ({ width: 100, height: 80 }),
+    };
+    const capture = load({
+        screen: { getAllDisplays: () => [display], getPrimaryDisplay: () => display },
+        desktopCapturer: { getSources: async () => [{ display_id: '1', thumbnail: blankThumbnail }] },
+        nativeImage: { createFromBuffer: () => fallbackImage },
+    }, 'win32', {
+        child_process: {
+            execFile(_name, _args, _options, callback) {
+                callback(null, JSON.stringify([{ base64: Buffer.from('native').toString('base64'), sourceWidth: 100, sourceHeight: 80, x: 0, y: 0 }]), '');
+            },
+        },
+    });
+    const [result] = await capture.captureAllMonitorsPng();
+    assert.equal(result.imageBuffer.toString(), 'fallback');
+    assert.equal(result.display.displayId, '1');
+});
+
+test('blank capture detection accepts detailed images and rejects unusable frames', () => {
+    const capture = load({}, 'win32', { child_process: {} });
+    assert.equal(capture.isBlankCapture({ toBitmap: () => Buffer.alloc(400) }), true);
+    assert.equal(capture.isBlankCapture({ toBitmap: () => Buffer.alloc(400, 255) }), true);
+    assert.equal(capture.isBlankCapture({ toBitmap: () => Buffer.from([5, 5, 5, 255, 16, 16, 16, 255]) }), false);
+});
+
+test('macOS fallback uses a private directory, has a deadline and cleans up on failure', async () => {
+    const removed = [], permissions = [];
+    const electron = { screen: { getAllDisplays: () => [{}] }, desktopCapturer: { getSources: async () => { throw new Error('Native capture failed'); } } };
+    const capture = load(electron, 'darwin', {
+        child_process: { execFile(_name, _args, options, callback) { assert.equal(options.timeout, 15000); callback(new Error('Capture denied')); } },
+        'node:path': { join: (...parts) => parts.join('/') }, 'node:os': { tmpdir: () => '/tmp' },
+        'node:fs/promises': { mkdtemp: async () => '/tmp/private', chmod: async (path, mode) => permissions.push([path, mode]), rm: async path => removed.push(path) },
+    });
+    await assert.rejects(capture.captureAllMonitorsPng(), /Capture denied/);
+    assert.deepEqual(permissions, [['/tmp/private', 0o700]]);
+    assert.deepEqual(removed, ['/tmp/private']);
+});
+
+test('8K capture fits server pixel and byte limits and reports encoded dimensions', async () => {
+    const display = { id: 1, scaleFactor: 1, bounds: { width: 7680, height: 4320, x: 0, y: 0 } };
+    let encodedSize;
+    const image = {
+        isEmpty: () => false,
+        getSize: () => ({ width: 7680, height: 4320 }),
+        resize(options) {
+            encodedSize = { width: options.width, height: options.height };
+            return { getSize: () => encodedSize, toPNG: () => Buffer.alloc(6 * 1024 * 1024), toJPEG: quality => {
+                assert.equal(quality, 75); return Buffer.alloc(1000);
+            } };
+        },
+    };
+    const capture = load({ screen: { getAllDisplays: () => [display] }, desktopCapturer: {
+        getSources: async () => [{ display_id: '1', thumbnail: image }],
+    } }, 'win32', { child_process: {} });
+    const [result] = await capture.captureAllMonitorsPng();
+    assert.ok(result.display.width * result.display.height <= 25_000_000);
+    assert.ok(result.display.width <= 8000 && result.display.height <= 8000);
+    assert.equal(result.display.width, encodedSize.width);
+    assert.equal(result.display.height, encodedSize.height);
+    assert.equal(result.imageBuffer.length, 1000);
+});

@@ -1,3 +1,117 @@
+# EmpTrakr Desktop
+
+## Dashboard destination
+
+"View Dashboard" opens a verified handoff page on the configured website origin.
+The trusted main process requests a two-minute, single-use code using the paired
+Employee desktop session. The browser removes the code from its address bar,
+verifies the intended Employee and company, and asks for confirmation when its
+Employee account differs or is absent. It then creates a separate HttpOnly browser
+session and opens `/user/dashboard`. Existing Admin sessions and desktop tracking
+are preserved. Cancel leaves the browser account unchanged. Lost confirmation
+responses can retry the same handoff without creating another session.
+
+This requires the compatible website/backend and an updated installed Desktop.
+An older backend or failed request displays an error without opening a different
+account's dashboard. Tokens, passwords and employee identity never enter the URL.
+
+Installed apps reject HTTP and local/private service addresses at startup. Build
+and install with the existing production packaging process; do not copy a
+development runtime-config.json into an installer.
+
+To run the development widget against production, put matching service settings
+in the ignored `.env.local` file before starting the app:
+
+```dotenv
+API_BASE=https://api.emptrakr.com/api
+VITE_API_BASE=https://api.emptrakr.com/api
+WEB_BASE=https://emptrakr.com
+VITE_WEB_BASE=https://emptrakr.com
+```
+
+Restart the desktop and its development server after changing these settings.
+For isolated local development, use matching local service addresses instead.
+
+## Desktop login compatibility
+
+The current backend requires EmpTrakr Desktop 1.2.30 or later. Earlier published
+installers open a browser code without creating the required device-bound pairing
+session and cannot complete this login protocol.
+
+After a compatible release is published, update the installed desktop app, start
+sign-in from that app, and complete it in the newly opened browser tab within five
+minutes. Use an Employee account. An old browser tab cannot restart a pairing
+session. The desktop must securely store the issued token and acknowledge it
+before entering the dashboard; interrupted acknowledgement delivery is retried.
+
+Before publishing, run the existing test, lint, build, release-version, and backend
+compatibility checks. The tag-triggered release workflow requires signing credentials,
+builds signed Windows and Intel/Apple Silicon Mac installers, and notarizes Mac apps
+and DMGs. Native verification checks the final archives before publication. A single
+publisher stages all assets in a draft, checks their downloaded checksums, then makes
+the complete release public. Missing signing credentials prevent publication.
+
+Configure the secrets and expected Windows publisher described in
+[the desktop release runbook](docs/desktop-releases.md) before pushing a version tag.
+It also documents local signing, notarization, and complete manual publication.
+Never commit certificates, passwords, or access tokens. Verify public installer
+assets, updater metadata, and website download destinations after publication,
+then verify pairing and tracking on the affected installed apps.
+
+Electron + React + Vite desktop time tracker.
+
+## Prerequisites
+
+- **Node.js 22 or 24** (use the latest patch release)
+- Windows: optional **Visual Studio Build Tools** with “Desktop development with C++” if `active-win` / native deps fail to build
+
+## Setup
+
+```bash
+npm ci
+```
+
+`postinstall` runs `scripts/ensure-electron.cjs`, which verifies the platform's Electron executable and the macOS runtime framework. Missing or incomplete downloads are repaired using the locked Electron package's `install.js`, without changing dependencies or rebuilding unrelated native modules.
+
+## Development
+
+```bash
+npm run dev
+```
+
+This checks Electron first, then starts Vite + Electron.
+
+### Electron binary broken?
+
+If you see:
+
+> Electron failed to install correctly, please delete node_modules/electron and try installing again
+
+Run:
+
+```bash
+npm run electron:repair
+```
+
+If the Electron npm package itself is missing or does not match the lockfile:
+
+```bash
+npm ci
+```
+
+`electron:repair` clears only the Electron download output and forces a fresh binary download. If downloading fails, check network access to Electron's GitHub releases or your configured `ELECTRON_MIRROR`, then retry.
+
+## Scripts
+
+| Command | Purpose |
+|---------|---------|
+| `npm run dev` | Dev app (auto-ensures Electron) |
+| `npm run electron:ensure` | Check/repair Electron binary if missing |
+| `npm run electron:repair` | Force reinstall Electron binary |
+| `npm run electron:build` | Windows installer |
+
+---
+
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

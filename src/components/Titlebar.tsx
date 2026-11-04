@@ -1,6 +1,17 @@
-export default function Titlebar() {
+import type { CSSProperties } from 'react';
+interface TitlebarProps {
+    userName: string;
+}
+
+export default function Titlebar({ userName }: TitlebarProps) {
     const eAPI = () => (window as unknown as { electronAPI?: Record<string, () => void> }).electronAPI;
     
+    // Dynamic greeting calculation
+    const hour = new Date().getHours();
+    let greeting = 'Good morning';
+    if (hour >= 12 && hour < 17) greeting = 'Good afternoon';
+    else if (hour >= 17) greeting = 'Good evening';
+
     const handleClose = () => {
         // Dispatch a custom event to allow React components to intercept the close
         const event = new CustomEvent('request-app-close', { cancelable: true });
@@ -16,13 +27,12 @@ export default function Titlebar() {
 
     return (
         <div className="titlebar">
-            <div className="titlebar__logo" aria-label="EmpTrakr">
-                <img className="titlebar__logo-image" src={`${import.meta.env.BASE_URL}logo.png`} alt="" />
-                <span className="titlebar__brand">EmpTrakr</span>
+            <div className="titlebar__logo">
+                <span className="titlebar__user-label">{greeting}, {userName}</span>
             </div>
 
             <div className="titlebar__right">
-                <div className="titlebar__controls" style={{ display: 'flex', gap: '8px', alignItems: 'center', WebkitAppRegion: 'no-drag' } as any}>
+                <div className="titlebar__controls" style={{ display: 'flex', gap: '8px', alignItems: 'center', WebkitAppRegion: 'no-drag' } as CSSProperties & { WebkitAppRegion: 'no-drag' }}>
                     <button className="titlebar__icon-btn" title="Minimize" onClick={handleMin}>
                         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <path d="M2 6H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>

@@ -16,69 +16,28 @@ interface LoginPageProps {
     onLogin: (user: User, token: string) => void;
 }
 
-import { API_BASE, WEB_BASE } from '../config';
-
-const APP_LOGO_URL = `${import.meta.env.BASE_URL}logo.png`;
+import { WEB_BASE } from '../config';
+import { setAuthToken, apiRequest } from '../api';
 
 interface DesktopSessionPayload extends User {
     token: string;
     idleThresholdSecs: number;
 }
 
-interface PairingInitResponse {
-    secret: string;
-}
-
-const DEVICE_ID_STORAGE_KEY = 'wf_pairing_device_id';
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const PAIRING_SECRET_PATTERN = /^[a-f0-9]{64}$/;
-
-function getOrCreateDeviceId(): string {
-    const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
-    if (existing && UUID_PATTERN.test(existing)) return existing;
-
-    const deviceId = crypto.randomUUID();
-    localStorage.setItem(DEVICE_ID_STORAGE_KEY, deviceId);
-    return deviceId;
-}
-
-async function initializePairing(code: string, deviceId: string): Promise<string> {
-    const response = await fetch(`${API_BASE}/auth/desktop-session/init`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, deviceId }),
-    });
-    const payload = await response.json().catch(() => null) as PairingInitResponse | { error?: string } | null;
-    if (!response.ok || !payload || !('secret' in payload) || !PAIRING_SECRET_PATTERN.test(payload.secret)) {
-        const message = payload && 'error' in payload && typeof payload.error === 'string'
-            ? payload.error
-            : 'Unable to start secure desktop sign-in. Please try again.';
-        throw new Error(message);
-    }
-    return payload.secret;
-}
-
-async function acknowledgePairing(code: string, secret: string, token: string): Promise<void> {
-    await fetch(`${API_BASE}/auth/desktop-session/${code}/ack`, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${token}`,
-            'x-pairing-secret': secret,
-        },
-    });
-}
-
 export default function LoginPage({ onLogin }: LoginPageProps) {
     const deviceCode = useRef<string>(crypto.randomUUID());
-    const deviceId = useRef<string>(getOrCreateDeviceId());
-    const pairingSecret = useRef<string | null>(null);
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const sessionConsumedRef = useRef(false);
+    const secretRef = useRef('');
+    const expiresAtRef = useRef(0);
+    const pendingAcknowledgementRef = useRef<{ code: string; data: DesktopSessionPayload } | null>(null);
+    const pollInFlightRef = useRef(false);
+    const initializingRef = useRef(false);
 
     const [waiting, setWaiting] = useState(false);
     const [expired, setExpired] = useState(false);
-    const [starting, setStarting] = useState(false);
-    const [pairingError, setPairingError] = useState<string | null>(null);
+    const [initializing, setInitializing] = useState(false);
+    const [error, setError] = useState('');
 
     const clearPolling = useCallback(() => {
         if (pollRef.current) {
@@ -88,12 +47,12 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     }, []);
 
     const completeLogin = useCallback(
-        (data: DesktopSessionPayload, code: string, secret: string) => {
+        (data: DesktopSessionPayload) => {
             if (sessionConsumedRef.current) return;
             sessionConsumedRef.current = true;
             clearPolling();
 
-            localStorage.setItem('wf_token', data.token);
+            setAuthToken(data.token);
             const user: User = {
                 id: data.id,
                 name: data.name,
@@ -101,12 +60,12 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 companyId: data.companyId,
                 companyName: data.companyName,
                 companyLogoUrl: data.companyLogoUrl ?? null,
+                timezone: data.timezone,
             };
 
-            localStorage.setItem('wf_user', JSON.stringify(user));
 
             const threshold = data.idleThresholdSecs ?? 60;
-            localStorage.setItem('wf_idle_threshold', String(threshold));
+
 
             const api = window.electronAPI as {
                 setIdleThreshold?: (s: number) => void;
@@ -115,10 +74,6 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             api?.setIdleThreshold?.(threshold);
             api?.setTrackerAuthToken?.(data.token);
 
-            void acknowledgePairing(code, secret, data.token).catch(() => {
-                // Login remains valid if acknowledgement is interrupted; the server
-                // expires the short-lived pairing record automatically.
-            });
             onLogin(user, data.token);
         },
         [clearPolling, onLogin]
@@ -126,40 +81,52 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
     const pollDesktopSession = useCallback(
         async (code: string) => {
-            if (sessionConsumedRef.current) return;
-            const secret = pairingSecret.current;
-            if (!secret) return;
+            if (sessionConsumedRef.current || pollInFlightRef.current || !secretRef.current) return;
+            if (Date.now() >= expiresAtRef.current) { clearPolling(); setExpired(true); setWaiting(false); return; }
+            pollInFlightRef.current = true;
             try {
-                const res = await fetch(`${API_BASE}/auth/desktop-session/${code}`, {
-                    headers: { 'x-pairing-secret': secret },
+                let data = pendingAcknowledgementRef.current?.code === code
+                    ? pendingAcknowledgementRef.current.data : null;
+                if (!data) {
+                    const res = await apiRequest(`/auth/desktop-session/${code}`, { headers: { 'x-pairing-secret': secretRef.current } });
+                    if (code !== deviceCode.current) return;
+                    if (res.status === 404) return;
+                    if ([400, 401, 403, 410].includes(res.status)) {
+                        const denial = await res.json().catch(() => ({}));
+                        clearPolling();
+                        setError(denial.code === 'EMPLOYMENT_ENDED' ? 'Your employment has ended. Contact your administrator.' : res.status === 410 ? 'Login session expired. Please try again.' : 'Pairing could not be verified. Please try again.');
+                        setExpired(true);
+                        setWaiting(false);
+                        return;
+                    }
+                    if (!res.ok) return;
+                    data = (await res.json()) as DesktopSessionPayload;
+                    if (typeof data.token !== 'string' || !data.token || typeof data.id !== 'string') throw new Error('Invalid session response');
+                    // Consume delivery only after the OS credential store confirms it.
+                    const stored = await window.electronAPI?.secureStoreToken(data.token);
+                    if (code !== deviceCode.current) return;
+                    if (!stored?.ok || !stored.encrypted) throw new Error('Secure token storage is unavailable');
+                    pendingAcknowledgementRef.current = { code, data };
+                }
+                // A lost response may follow a successful server-side consumption.
+                // Retry the idempotent acknowledgement rather than polling again.
+                const acknowledgement = await apiRequest(`/auth/desktop-session/${code}/ack`, {
+                    method: 'POST', headers: { 'x-pairing-secret': secretRef.current },
                 });
-                if (res.status === 404) return;
-                if (res.status === 410) {
-                    clearPolling();
-                    pairingSecret.current = null;
-                    setExpired(true);
-                    setWaiting(false);
-                    return;
+                if (!acknowledgement.ok) throw new Error('Pairing delivery was not acknowledged');
+                if (code === deviceCode.current) {
+                    pendingAcknowledgementRef.current = null;
+                    completeLogin(data);
                 }
-                if (!res.ok) {
-                    clearPolling();
-                    pairingSecret.current = null;
-                    setPairingError('Secure desktop sign-in could not continue. Start a new sign-in from the desktop app.');
-                    setWaiting(false);
-                    return;
-                }
-                const data = (await res.json()) as DesktopSessionPayload;
-                completeLogin(data, code, secret);
             } catch {
-                // Retry on next tick.
-            }
+                // Retry within the fixed pairing deadline.
+            } finally { pollInFlightRef.current = false; }
         },
         [clearPolling, completeLogin]
     );
 
     useEffect(() => {
         if (!waiting) return;
-        setExpired(false);
         sessionConsumedRef.current = false;
         const code = deviceCode.current;
         // First check immediately, then poll every 2s
@@ -186,46 +153,55 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     }, [waiting, expired, pollDesktopSession]);
 
     const handleOpenBrowser = async () => {
-        if (starting) return;
-
-        setStarting(true);
-        clearPolling();
-        setPairingError(null);
-        setExpired(false);
-        sessionConsumedRef.current = false;
-
+        if (initializingRef.current) return;
+        initializingRef.current = true;
+        setInitializing(true);
+        setError('');
+        // Each attempt gets a fresh challenge, including retries after a network error.
+        deviceCode.current = crypto.randomUUID();
+        pendingAcknowledgementRef.current = null;
+        const code = deviceCode.current;
         try {
-            const code = crypto.randomUUID();
-            const secret = await initializePairing(code, deviceId.current);
-            deviceCode.current = code;
-            pairingSecret.current = secret;
-
-            const api = window.electronAPI as { openLogin?: (deviceCode: string) => void } | undefined;
-            if (api?.openLogin) {
-                api.openLogin(code);
-            } else {
-                window.open(
-                    `${WEB_BASE}/login?desktopCode=${encodeURIComponent(code)}&returnTo=desktop`,
-                    '_blank'
-                );
-            }
-            setWaiting(true);
-        } catch (error) {
-            pairingSecret.current = null;
-            setPairingError(error instanceof Error ? error.message : 'Unable to start desktop sign-in.');
+            const deviceId = await window.electronAPI?.getDeviceId?.();
+            if (!deviceId) throw new Error('Desktop device identity is unavailable. Restart the app and try again.');
+            const response = await apiRequest('/auth/desktop-session/init', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, deviceId }) });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Unable to start login');
+            if (code !== deviceCode.current) return;
+            if (!/^[a-f0-9]{64}$/.test(data.secret) || typeof data.expiresAt !== 'number' || data.expiresAt <= Date.now()) throw new Error('Invalid pairing response');
+            secretRef.current = data.secret; expiresAtRef.current = data.expiresAt;
+        } catch (cause) {
+            if (code === deviceCode.current) setError(cause instanceof Error ? cause.message : 'Unable to start login. Check your connection and try again.');
+            return;
         } finally {
-            setStarting(false);
+            initializingRef.current = false;
+            setInitializing(false);
         }
+        // Always build URL from renderer WEB_BASE so UI label and browser match
+        // (avoids production emptrakr.com when main-process config is stale).
+        const loginUrl =
+            `${WEB_BASE.replace(/\/+$/, '')}/login` +
+            `?desktopCode=${encodeURIComponent(code)}&returnTo=desktop`;
+        const api = window.electronAPI as { openLogin?: (codeOrUrl: string) => void } | undefined;
+        if (api?.openLogin) {
+            api.openLogin(loginUrl);
+        } else {
+            window.open(loginUrl, '_blank');
+        }
+        console.log('[Auth] Opening browser login');
+        sessionConsumedRef.current = false;
+        setExpired(false);
+        setWaiting(true);
     };
 
     const handleRetry = () => {
         clearPolling();
-        deviceCode.current = crypto.randomUUID();
-        pairingSecret.current = null;
+        deviceCode.current = crypto.randomUUID(); secretRef.current = ''; expiresAtRef.current = 0;
+        pendingAcknowledgementRef.current = null;
         sessionConsumedRef.current = false;
         setExpired(false);
-        setPairingError(null);
         setWaiting(false);
+        setError('');
     };
 
     return (
@@ -233,7 +209,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             <div className="login-card" style={{ textAlign: 'center', maxWidth: 380, background: 'rgba(255, 255, 255, 0.65)', backdropFilter: 'blur(24px)', border: '1px solid rgba(255,255,255,0.8)' }}>
                 <div className="login__brand">
                     <img
-                        src={APP_LOGO_URL}
+                        src="./logo.png"
                         alt="EmpTrakr logo"
                         style={{
                             width: 150,
@@ -248,16 +224,11 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                     <p>Time Tracker Widget</p>
                 </div>
 
-                {pairingError && (
-                    <div style={{ fontSize: 13, color: 'var(--danger)', margin: '0 0 18px' }}>
-                        {pairingError}
-                    </div>
-                )}
-
+                {error && !expired && <p role="alert" style={{ color: 'var(--danger)', fontSize: 13 }}>{error}</p>}
                 {expired ? (
                     <>
                         <div style={{ fontSize: 13, color: 'var(--danger)', margin: '0 0 18px' }}>
-                            Login session expired (5 minutes). Please try again.
+                            {error || 'Login session expired (5 minutes). Please try again.'}
                         </div>
                         <button
                             id="btn-retry-login"
@@ -298,10 +269,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                                 padding: '6px 12px',
                                 cursor: 'pointer',
                             }}
-                            onClick={() => {
-                                clearPolling();
-                                setWaiting(false);
-                            }}
+                            onClick={handleRetry}
                         >
                             Cancel
                         </button>
@@ -324,7 +292,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                             id="btn-open-login"
                             className="btn btn-primary"
                             onClick={handleOpenBrowser}
-                            disabled={starting}
+                            disabled={initializing}
                             style={{ width: '100%', justifyContent: 'center', gap: 8, fontSize: 15 }}
                         >
                             <svg
@@ -341,7 +309,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                                 <polyline points="15 3 21 3 21 9" />
                                 <line x1="10" y1="14" x2="21" y2="3" />
                             </svg>
-                            {starting ? 'Preparing secure sign-in...' : 'Open Login in Browser'}
+                            {initializing ? 'Starting login...' : 'Open Login in Browser'}
                         </button>
 
                         <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 14 }}>

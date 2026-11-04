@@ -1,33 +1,58 @@
-# EmpTrakr Desktop Agent Instructions
+# EmpTrakr desktop Monitor
 
-## Package manager
+## Scope and structure
 
-Use npm with the repository `package-lock.json`: `npm ci`, `npm run dev`, `npm run build`.
+This is the Electron desktop tracker with a React/TypeScript/Vite renderer.
+Renderer pages, components, and hooks live in `src/`. Electron lifecycle, IPC,
+storage, network access, and tracking live in `electron/`. Packaging and runtime
+configuration helpers live in `scripts/`; regression checks live in `tests/`.
 
-## Project boundaries
+This folder has its own Git repository, lockfile, and `.github/workflows/`.
+Preserve unrelated working changes. Do not edit generated `dist/`, installers,
+or runtime configuration as a substitute for changing their source/settings.
 
-- Renderer source belongs in `src/`; Electron main/preload/tracking code belongs in `electron/`.
-- Keep the renderer, Electron IPC boundary, and backend API as separate layers.
-- The local development renderer uses `127.0.0.1:5174`; its local backend API uses `localhost:5005/api`.
-- Keep release configuration and generated artifacts out of unrelated application commits.
+## Development and validation
 
-## Quality and security
+Use Node.js 22 or 24 as required by package.json and CI. Install with `npm ci`.
+`npm run dev` checks Electron and starts Vite plus Electron. The renderer defaults
+to port 5173, and `dev:electron` waits on that port. Admin also defaults to 5173
+when run independently; keep renderer, Electron wait URL, and development CSP
+consistent if a port override is needed to run both apps.
 
-- Use explicit renderer, IPC, and API payload types; do not add `any` for `window.electronAPI` or external responses.
-- Expose the smallest possible validated preload API. Validate IPC payloads in the main process.
-- Never log access tokens, passwords, deep-link URLs, device codes, screenshots, or sensitive activity data.
-- Keep timers, tracking, screenshot delivery, and updater actions in small focused services with bounded retries and contextual error handling.
-- Use `async`/`await`; parallelize only independent work and preserve ordering for telemetry and lifecycle events.
-- Measure CPU, memory, network, and queue behavior before optimizing capture/tracking code. Do not drop, reorder, or duplicate telemetry while optimizing.
+For application changes run the relevant tests plus `npm test`, `npm run lint`,
+and `npm run build`. Renderer build success does not verify an installed app.
+Use the Electron packaging scripts when packaging is part of the requested task.
+Documentation-only changes do not require launching or packaging Electron.
 
-## Verification
+## Configuration and authentication
 
-- Run `npm run build` after TypeScript or renderer/main-process changes.
-- Add focused Node tests for pure timer, API, IPC, queue, and retry logic before changing behavior.
+Resolve URLs through `scripts/config.cjs` and generate Electron settings with
+`scripts/write-electron-config.cjs`. Development defaults are
+`http://localhost:5005/api` and `http://localhost:3000`; production uses the
+configured remote HTTPS API and website. Keep API_BASE/VITE_API_BASE and
+WEB_BASE/VITE_WEB_BASE aligned. Retain Vite's relative asset base for `file://`.
 
-## Commit attribution
+Desktop login initializes a device-bound pairing challenge before opening the
+browser. The browser approves through its authenticated Employee session; the
+desktop polls using its private secret and consumes the token once. Deep links
+trigger a recheck, not trust in URL-supplied identity or credentials. Keep expiry,
+retry, device ownership, and Employee-only restrictions intact.
 
-AI-authored commits must include:
-```
-Co-Authored-By: Codex <noreply@openai.com>
-```
+## Electron and tracking boundaries
+
+Preserve context isolation, sandboxing, the preload bridge, IPC allowlists,
+sender checks, and the controlled API bridge. Do not give renderer code arbitrary
+filesystem, shell, or network access. Keep secrets out of renderer storage and
+logs. Retain OS-protected storage and the existing in-memory fallback policy.
+
+Keep stable event IDs, original capture times, bounded offline queues, replay
+protection, heartbeat/disconnect behavior, and break/idle accounting. Treat
+screenshots and app activity as employee data; do not publish test captures.
+
+## CI and releases
+
+Pushes to `main` and pull requests run Windows/macOS integration checks. Version
+tags matching `v*` trigger the release workflow. Package version and release tag
+must agree. Keep compatible backend checks and signing/notarization validation;
+publish installers or release tags only when included in the user's request.
+Verify installed Monitor pairing and tracking separately from renderer tests.

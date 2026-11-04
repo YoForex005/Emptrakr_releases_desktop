@@ -17,25 +17,19 @@
 
 process.noDeprecation = true; // Hides non-critical node warnings (like url.parse)
 
-const { app, BrowserWindow, ipcMain, powerMonitor, shell, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, powerMonitor, shell, safeStorage } = require('electron');
 let autoUpdater = null;
 const axios = require('axios');
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
-const crypto = require('crypto');
 const tracker = require('./tracking/tracker');
 const screenshotScheduler = require('./tracking/screenshotScheduler');
 const wfhScreenMonitor = require('./tracking/wfhScreenMonitor');
+const online = require('./tracking/onlineState.cjs');
+const { clearQueues, removeLegacyTelemetry } = require('./tracking/deliveryQueue.cjs');
 const { URL } = require('url');
-const { buildDashboardHandoffUrl } = require('./dashboardHandoff');
 
-function readRuntimeConfig() {
-    try {
-        return require('./runtime-config.json');
-    } catch {
-        return {};
-    }
-}
 
 // Set the app name explicitly for the taskbar and OS integration
 app.setName('EmpTrakr');
@@ -65,16 +59,9 @@ if (!gotSingleInstanceLock) {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
-const APP_ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
-const APP_ICON = nativeImage.createFromPath(APP_ICON_PATH);
-const WINDOW_ICON = APP_ICON.isEmpty() ? APP_ICON_PATH : APP_ICON;
-const runtimeConfig = readRuntimeConfig();
-const API_BASE = process.env.API_BASE || (isDev
-    ? 'http://localhost:5005/api'
-    : runtimeConfig.API_BASE || 'https://api.emptrakr.com/api');
-const WEB_BASE = process.env.WEB_BASE || (isDev
-    ? 'http://localhost:3000'
-    : runtimeConfig.WEB_BASE || 'https://emptrakr.com');
+const runtimeConfig = require('./config.cjs');
+const API_BASE = runtimeConfig.API_BASE;
+const WEB_BASE = runtimeConfig.WEB_BASE;
 const START_EMBEDDED_BACKEND = process.env.START_EMBEDDED_BACKEND === 'true' || runtimeConfig.START_EMBEDDED_BACKEND === true;
 
 function createNoopAutoUpdater() {
@@ -126,9 +113,62 @@ const IDLE_POLL_INTERVAL_MS = 1_000; // 1 second
 // ── State ─────────────────────────────────────────────────────────────────────
 
 let mainWindow = null;
+online.subscribe(state => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('tracking-connection', state); });
+
+function trustedSender(event) {
+    const expected = isDev ? 'http://localhost:5173' : require('url').pathToFileURL(path.join(__dirname, '../dist/index.html')).href;
+    return require('./ipcPolicy.cjs').isTrustedSender(event, mainWindow?.webContents, expected, isDev);
+}
+function onTrusted(channel, listener) { ipcMain.on(channel, (event, ...args) => { if (trustedSender(event)) return listener(event, ...args); }); }
+function handleTrusted(channel, listener) { ipcMain.handle(channel, (event, ...args) => { if (!trustedSender(event)) throw new Error('Untrusted IPC sender'); return listener(event, ...args); }); }
+function setSessionToken(token) { const next = normalizeAuthToken(token); if (next !== sessionAuthToken) { online.disconnect('Session changed'); clearQueues(); } sessionAuthToken = next; employmentSession.setToken(next); tracker.setAuthToken(sessionAuthToken); screenshotScheduler.setAuthToken(sessionAuthToken); disconnectIntentSent = false; }
+
 let backendProcess = null;
 let pendingAuthCallbackUrl = null;
 let sessionAuthToken = null;
+let inMemoryTokenFallback = null;
+const employmentSession = new (require('./employmentSession.cjs').EmploymentSession)({ onEnd: detail => {
+    setSessionToken(null); tracker.clearTrackingData(); currentShiftStatus = 'stopped';
+    inMemoryTokenFallback = null;
+    for (const name of ['auth.enc', 'attendance-intent.enc']) {
+        const file = path.join(app.getPath('userData'), name);
+        try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch { /* The server has revoked access; retry cleanup at sign-out. */ }
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('session-ended', detail);
+} });
+async function sessionTransport(request, token) {
+    const response = await require('./apiBridge.cjs').requestApi(API_BASE, token, request);
+    employmentSession.observe(token, response);
+    return response;
+}
+let attendanceRevision = 0;
+const attendance = new (require('./attendanceCoordinator.cjs').AttendanceCoordinator)({
+    token: () => sessionAuthToken,
+    transport: sessionTransport,
+    disconnectedAt: () => online.getDisconnectedAt(),
+    load: () => {
+        const file = path.join(app.getPath('userData'), 'attendance-intent.enc');
+        if (!fs.existsSync(file)) return null;
+        if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure attendance storage unavailable');
+        return JSON.parse(safeStorage.decryptString(fs.readFileSync(file)));
+    },
+    save: pending => {
+        const file = path.join(app.getPath('userData'), 'attendance-intent.enc');
+        if (!pending) { if (fs.existsSync(file)) fs.unlinkSync(file); return; }
+        if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure attendance storage unavailable');
+        const temporary = file + '.new';
+        fs.writeFileSync(temporary, safeStorage.encryptString(JSON.stringify(pending)), { mode: 0o600 });
+        fs.renameSync(temporary, file);
+    },
+    onState: (state, latency, renewed) => {
+        const context = state.ownedByThisDevice ? state : { status: 'stopped', shift: null };
+        currentShiftStatus = context.status;
+        tracker.setTrackingContext(context); screenshotScheduler.setTrackingContext(context);
+        if (context.shift) online.confirm(state.trackingLease, latency, renewed);
+        else online.disconnect('No shift owned by this device');
+    },
+});
+
 let disconnectIntentSent = false;
 let allowWindowClose = false;
 
@@ -136,7 +176,6 @@ let allowWindowClose = false;
 // without waiting for the renderer (which may be too slow before network drops).
 // Updated by the renderer via 'update-shift-status' IPC whenever status changes.
 let currentShiftStatus = 'stopped'; // 'stopped' | 'working' | 'on_break'
-let currentShiftId = null;
 let sleepBreakStarted = false;      // true if THIS sleep triggered a break
 let isWfhMode = false;              // true when active shift has workLocation === 'wfh'
 let quitIntentInFlight = false;
@@ -171,59 +210,13 @@ function normalizeAuthToken(token) {
 }
 
 async function sendDisconnectIntent(reason) {
-    if (!sessionAuthToken) return;
-    if (!currentShiftId) return;
-    if (disconnectIntentSent) return;
-
-    disconnectIntentSent = true;
-
+    if (!sessionAuthToken || disconnectIntentSent) return;
     try {
-        await axios.post(
-            `${API_BASE}/time/disconnect-intent`,
-            {
-                commandId: crypto.randomUUID(),
-                shiftId: currentShiftId,
-                reason: reason || 'desktop_exit',
-                disconnectedAt: new Date().toISOString(),
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${sessionAuthToken}`,
-                },
-                timeout: 3000,
-            }
-        );
-        console.log('[Session] Disconnect intent sent to backend');
-    } catch (err) {
-        const message = err && err.message ? err.message : 'unknown error';
-        console.warn('[Session] Failed to send disconnect intent:', message);
-    }
+        const response = await attendance.request({ method: 'POST', path: '/time/disconnect-intent', body: JSON.stringify({ reason: reason || 'desktop_exit' }) });
+        disconnectIntentSent = response.status >= 200 && response.status < 300;
+    } catch { console.warn('[Attendance] Disconnect intent remains unacknowledged'); }
 }
 
-async function sendBreakCommand(action, source, context) {
-    if (!sessionAuthToken) return false;
-    if (!currentShiftId) return false;
-    try {
-        const response = await axios.post(
-            `${API_BASE}/time/break/${action}`,
-            { commandId: crypto.randomUUID(), shiftId: currentShiftId, source },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${sessionAuthToken}`,
-                },
-                timeout: 4000,
-            }
-        );
-        console.log(`[Sleep] Break ${action} sent from main process (${context}, source=${source})`);
-        return response.data || true;
-    } catch (err) {
-        const message = err && err.message ? err.message : 'unknown error';
-        console.warn(`[Sleep] Failed to ${action} break (${context}, source=${source}):`, message);
-        return false;
-    }
-}
 
 // ── OTA Updates (Configuration) ──────────────────────────────────────────────
 
@@ -279,7 +272,7 @@ function handleDeepLink(rawUrl) {
         const parsed = new URL(rawUrl);
         if (parsed.protocol !== `${DEEP_LINK_PROTOCOL}:`) return;
 
-        console.log('[Auth] Deep link received:', rawUrl);
+        console.log('[Auth] Deep link callback received');
         focusMainWindow();
         dispatchAuthCallback(rawUrl);
     } catch (err) {
@@ -326,53 +319,59 @@ function startBackend() {
 // ── Idle Detection ────────────────────────────────────────────────────────────
 
 /**
- * Starts polling the system idle time every IDLE_POLL_INTERVAL_MS milliseconds.
+ * Re-evaluates idle using the current work location and system inactivity.
  * Emits 'idle-start' / 'idle-end' IPC events to the renderer on state changes.
+ * Used by both periodic polling and work-location transitions.
  *
  * Why not use powerMonitor events directly?
  *   powerMonitor.on('user-did-become-idle') requires a threshold set globally.
  *   Polling gives us full control and is reliable across all platforms.
  */
+function refreshIdleState() {
+    // Only run if the window exists and is ready
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    // Suppress idle tracking while the screen is locked.
+    // The break (started by screen-lock) already accounts for this time.
+    // Counting idle on top of a lock-break would double-count inactivity.
+    if (isScreenLocked || attendance.sensors.sleeping) return;
+
+    const idleSecs = powerMonitor.getSystemIdleTime();
+    const inputIdle = idleSecs >= IDLE_THRESHOLD_SECS;
+    const screenIdle = isWfhMode && wfhScreenMonitor.isScreenIdle();
+    // WFH OR-mode: either input idle OR screen idle triggers.
+    // Office (default): input idle alone — existing behaviour.
+    const nowIdle = isWfhMode ? (inputIdle || screenIdle) : inputIdle;
+    tracker.setPaused(nowIdle || isScreenLocked); screenshotScheduler.setPaused(nowIdle || isScreenLocked);
+
+    // ── Transition: Active → Idle ──────────────────────────────────────
+    if (nowIdle && !isUserIdle) {
+        isUserIdle = true;
+
+        // Pick the earliest known idle start:
+        //   - Input trigger: now - idleSecs (standard path)
+        //   - Screen trigger: when the screen actually went static
+        // Whichever happened first is the true idle start.
+        const inputIdleStart = new Date(Date.now() - idleSecs * 1000);
+        const screenIdleAt = isWfhMode ? (wfhScreenMonitor.getScreenIdleAt() ?? inputIdleStart) : inputIdleStart;
+        const idleStartTime = (screenIdleAt < inputIdleStart ? screenIdleAt : inputIdleStart).toISOString();
+
+        console.log(`[Idle] User went idle. Input idle: ${idleSecs}s, screen idle: ${screenIdle} (Threshold: ${IDLE_THRESHOLD_SECS}s) started at: ${idleStartTime}`);
+        attendance.setSensors({ idle: true, idleStart: idleStartTime });
+        mainWindow.webContents.send('idle-start', idleStartTime);
+    }
+
+    // ── Transition: Idle → Active ──────────────────────────────────────
+    if (!nowIdle && isUserIdle) {
+        isUserIdle = false;
+        attendance.setSensors({ idle: false, idleStart: null });
+        console.log('[Idle] User became active again');
+        mainWindow.webContents.send('idle-end');
+    }
+}
+
 function startIdlePolling() {
-    setInterval(() => {
-        // Only run if the window exists and is ready
-        if (!mainWindow || mainWindow.isDestroyed()) return;
-
-        // Suppress idle tracking while the screen is locked.
-        // The break (started by screen-lock) already accounts for this time.
-        // Counting idle on top of a lock-break would double-count inactivity.
-        if (isScreenLocked) return;
-
-        const idleSecs = powerMonitor.getSystemIdleTime();
-        const inputIdle = idleSecs >= IDLE_THRESHOLD_SECS;
-        const screenIdle = isWfhMode && wfhScreenMonitor.isScreenIdle();
-        // WFH OR-mode: either input idle OR screen idle triggers.
-        // Office (default): input idle alone — existing behaviour.
-        const nowIdle = isWfhMode ? (inputIdle || screenIdle) : inputIdle;
-
-        // ── Transition: Active → Idle ──────────────────────────────────────
-        if (nowIdle && !isUserIdle) {
-            isUserIdle = true;
-
-            // Pick the earliest known idle start:
-            //   - Input trigger: now - idleSecs (standard path)
-            //   - Screen trigger: when the screen actually went static
-            // Whichever happened first is the true idle start.
-            const inputIdleStart = new Date(Date.now() - idleSecs * 1000);
-            const screenIdleAt = isWfhMode ? (wfhScreenMonitor.getScreenIdleAt() ?? inputIdleStart) : inputIdleStart;
-            const idleStartTime = (screenIdleAt < inputIdleStart ? screenIdleAt : inputIdleStart).toISOString();
-
-            console.log(`[Idle] User went idle. Input idle: ${idleSecs}s, screen idle: ${screenIdle} (Threshold: ${IDLE_THRESHOLD_SECS}s) started at: ${idleStartTime}`);
-            mainWindow.webContents.send('idle-start', idleStartTime);
-        }
-
-        // ── Transition: Idle → Active ──────────────────────────────────────
-        if (!nowIdle && isUserIdle) {
-            isUserIdle = false;
-            console.log('[Idle] User became active again');
-            mainWindow.webContents.send('idle-end');
-        }
-    }, IDLE_POLL_INTERVAL_MS);
+    setInterval(refreshIdleState, IDLE_POLL_INTERVAL_MS);
 }
 
 // ── Screen Lock Detection ─────────────────────────────────────────────────────
@@ -390,7 +389,9 @@ function startIdlePolling() {
  */
 function startScreenLockDetection() {
     powerMonitor.on('lock-screen', () => {
-        isScreenLocked = true;
+        attendance.setSensors({ locked: true, idle: false, idleStart: null });
+        void attendance.reconcile().catch(() => {});
+        isScreenLocked = true; tracker.setPaused(true); screenshotScheduler.setPaused(true);
 
         // If the user was idle when they locked, clear that state.
         // The lock-break will cover this period going forward.
@@ -409,7 +410,9 @@ function startScreenLockDetection() {
     });
 
     powerMonitor.on('unlock-screen', () => {
-        isScreenLocked = false;
+        attendance.setSensors({ locked: false });
+        void attendance.reconcile().catch(() => {});
+        isScreenLocked = false; tracker.setPaused(false); screenshotScheduler.setPaused(false);
         console.log('[ScreenLock] Screen unlocked — notifying renderer to end break');
         if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('screen-unlocked');
@@ -421,42 +424,84 @@ function startScreenLockDetection() {
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        // Fixed portrait 9:16 desktop widget.
-        // Compact floating tracker widget.
-        width: 400,
-        height: 520,
-        resizable: false,
-        maximizable: false,
-        fullscreenable: false,
-        roundedCorners: true,
+        width: 480,
+        height: 500,
+        minWidth: 420,
+        minHeight: 420,
         frame: false,
         titleBarStyle: 'hidden',
-        transparent: true,
-        icon: WINDOW_ICON,
+        icon: path.join(__dirname, 'assets', 'icon.png'),
         webPreferences: {
             nodeIntegration: false,     // security: no direct Node access in renderer
             contextIsolation: true,     // security: renderer and preload have separate contexts
             preload: path.join(__dirname, 'preload.js'),
-            // In dev the renderer loads from http://127.0.0.1:5174, which the production
-            // backend's CORS list doesn't include. Disabling webSecurity removes the
-            // browser-side CORS check so dev fetches reach the production API.
-            // Production builds load from file:// (no origin) → CORS never applies there.
-            webSecurity: !isDev,
+            backgroundThrottling: false, // Prevents timer throttling when minimized/backgrounded
+            devTools: isDev,            // Security: DevTools disabled in production builds
+            // Renderer networking goes through the validated main-process API bridge.
+            webSecurity: true,
+            sandbox: true,
         },
-        // The renderer draws the visible rounded shell; the outer pixels stay transparent.
-        backgroundColor: '#00000000',
+        backgroundColor: '#0a0b0f',
         show: false, // show only after ready-to-show to avoid white flash
     });
 
-    if (process.platform === 'win32') {
-        mainWindow.setIcon(WINDOW_ICON);
+    // In production, block inspection shortcuts (F12, Ctrl+Shift+I, Ctrl+Shift+J, Cmd+Option+I, Cmd+Option+J, Ctrl+U)
+    if (!isDev) {
+        mainWindow.webContents.on('before-input-event', (event, input) => {
+            const isCtrlOrCmd = Boolean(input.control || input.meta);
+            const key = String(input.key || '').toLowerCase();
+
+            // Block F12
+            if (key === 'f12') {
+                event.preventDefault();
+                return;
+            }
+
+            // Block Ctrl+Shift+I / Cmd+Option+I, Ctrl+Shift+J / Cmd+Option+J, Ctrl+Shift+C / Cmd+Option+C
+            if (isCtrlOrCmd && (input.shift || input.alt) && (key === 'i' || key === 'j' || key === 'c')) {
+                event.preventDefault();
+                return;
+            }
+
+            // Block Ctrl+U / Cmd+U (View Source)
+            if (isCtrlOrCmd && key === 'u') {
+                event.preventDefault();
+                return;
+            }
+        });
     }
 
     const startUrl = isDev
-        ? 'http://127.0.0.1:5174'
-        : `file://${path.join(__dirname, '../dist/index.html')}`;
+        ? 'http://localhost:5173'
+        : require('url').pathToFileURL(path.join(__dirname, '../dist/index.html')).href;
 
     mainWindow.loadURL(startUrl);
+
+    // Restrict window opening: Deny child BrowserWindow creation; route allowed URLs to system browser
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (isAllowedExternalUrl(url)) {
+            shell.openExternal(url).catch((err) => {
+                console.error('[Shell] Failed to open external URL:', err);
+            });
+        } else {
+            console.warn('[Security] Denied opening unapproved external URL:', url);
+        }
+        return { action: 'deny' };
+    });
+
+    // Restrict in-window top-level navigation: Prevent renderer from navigating to external sites
+    mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+        try {
+            const parsed = new URL(navigationUrl);
+            if (isDev && parsed.origin === 'http://localhost:5173') return;
+            if (parsed.href.split('#')[0] === require('url').pathToFileURL(path.join(__dirname, '../dist/index.html')).href) return;
+        } catch {
+            // Malformed URL
+        }
+        event.preventDefault();
+        console.warn('[Security] Blocked top-level navigation to:', navigationUrl);
+    });
+
     mainWindow.webContents.on('did-finish-load', () => {
         if (!pendingAuthCallbackUrl || !mainWindow || mainWindow.isDestroyed()) return;
         const url = pendingAuthCallbackUrl;
@@ -520,78 +565,196 @@ function createWindow() {
 // ── App Lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
+    removeLegacyTelemetry(path.join(app.getPath('userData'), 'telemetry'));
     if (!gotSingleInstanceLock) return;
     // ── IPC: Window Controls ──────────────────────────────────────────────────
     // Register IPC handlers after the app is fully ready
-    ipcMain.on('window-close', () => mainWindow && mainWindow.close());
-    ipcMain.on('window-force-close', () => {
+    onTrusted('window-close', () => mainWindow && mainWindow.close());
+    onTrusted('window-force-close', () => {
         allowWindowClose = true;
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
     });
-    ipcMain.on('window-minimize', () => mainWindow && mainWindow.minimize());
-    ipcMain.on('window-maximize', () => {
+    onTrusted('window-minimize', () => mainWindow && mainWindow.minimize());
+    onTrusted('window-maximize', () => {
         if (!mainWindow) return;
         if (mainWindow.isMaximized()) mainWindow.unmaximize();
         else mainWindow.maximize();
     });
 
     // ── IPC: App Tracker ──────────────────────────────────────────────────────
-    ipcMain.handle('get-app-usage', async () => {
+    handleTrusted('get-app-usage', async () => {
         return tracker.getCurrentData();
     });
 
-    ipcMain.handle('get-app-version', () => {
+    handleTrusted('get-app-version', () => {
         return app.getVersion();
     });
 
-    ipcMain.on('clear-app-usage', () => {
+    onTrusted('clear-app-usage', () => {
         tracker.clearTrackingData();
     });
 
-    ipcMain.on('set-tracker-auth-token', (_event, token) => {
+    onTrusted('set-tracker-auth-token', (_event, token) => {
         if (typeof token !== 'string') return;
-        tracker.setAuthToken(token);
-        screenshotScheduler.setAuthToken(token);
-        sessionAuthToken = normalizeAuthToken(token);
+        setSessionToken(token);
+    });
+
+    onTrusted('clear-tracker-auth-token', () => {
+        online.disconnect('Session cleared'); clearQueues();
+        tracker.clearAuthToken();
+        screenshotScheduler.clearAuthToken();
+        setSessionToken(null);
         disconnectIntentSent = false;
     });
 
-    ipcMain.on('clear-tracker-auth-token', () => {
-        tracker.clearAuthToken();
-        screenshotScheduler.clearAuthToken();
-        sessionAuthToken = null;
-        disconnectIntentSent = false;
-        currentShiftStatus = 'stopped';
-        currentShiftId = null;
+    onTrusted('get-config', event => { event.returnValue = runtimeConfig; });
+    handleTrusted('get-tracking-connection', () => online.snapshot());
+    handleTrusted('get-device-id', () => {
+        const file = path.join(app.getPath('userData'), 'device-id');
+        if (fs.existsSync(file)) { const value = fs.readFileSync(file, 'utf8'); if (/^[a-f0-9-]{36}$/.test(value)) return value; }
+        const value = require('crypto').randomUUID(); fs.writeFileSync(file, value); return value;
+    });
+    handleTrusted('api-request', async (_event, request) => {
+        const token = sessionAuthToken;
+        const isHeartbeatRequest = request.method === 'POST' && request.path === '/time/heartbeat';
+        const renewsTrackingLease = request.method === 'POST'
+            && ['/time/heartbeat', '/time/start', '/time/rollover'].includes(request.path);
+        if (request.method === 'POST' && request.path?.startsWith('/time/')) ++attendanceRevision;
+        const revision = attendanceRevision;
+        const bridgeRequest = request.path === '/time/heartbeat' && request.method === 'POST'
+            ? { ...request } : request;
+        let response;
+        try { response = await attendance.request(bridgeRequest); }
+        // Status reads and telemetry requests can fail independently of the
+        // heartbeat. Only a rejected heartbeat may shorten the local lease;
+        // otherwise an acknowledged server lease remains authoritative until
+        // it expires.
+        catch (error) { if (isHeartbeatRequest && token === sessionAuthToken) online.disconnect('Heartbeat request failed'); throw error; }
+        if (token !== sessionAuthToken) return response;
+        if (response.status === 401) { setSessionToken(null); tracker.clearTrackingData(); }
+        if (isHeartbeatRequest && response.status >= 400) online.disconnect('Heartbeat was not accepted');
+        if (response.status >= 200 && response.status < 300) {
+            const data = JSON.parse(response.body);
+            // The command acknowledgement itself contains a server-issued
+            // lease. Preserve it even when the follow-up status read is late
+            // or temporarily unavailable.
+            if (renewsTrackingLease && data.trackingLease) {
+                online.confirm(data.trackingLease, response.roundTripMs, true);
+            }
+            if (request.path === '/time/status' && revision === attendanceRevision) {
+                const context = data.ownedByThisDevice ? data : { status: 'stopped', shift: null };
+                currentShiftStatus = context.status; tracker.setTrackingContext(context); screenshotScheduler.setTrackingContext(context);
+                if (data.ownedByThisDevice && data.shift) online.confirm(data.trackingLease, response.roundTripMs, false);
+                else online.disconnect('No shift owned by this device');
+            }
+            if (request.method === 'POST' && request.path.startsWith('/time/') && request.path !== '/time/disconnect-intent' && revision === attendanceRevision) {
+                try {
+                    const statusResponse = await sessionTransport({ method: 'GET', path: '/time/status' }, token);
+                    if (token === sessionAuthToken && revision === attendanceRevision) {
+                        if (statusResponse.status !== 200) online.disconnect('Unable to confirm shift status');
+                        else {
+                            const state = JSON.parse(statusResponse.body);
+                            const context = state.ownedByThisDevice ? state : { status: 'stopped', shift: null };
+                            currentShiftStatus = context.status; tracker.setTrackingContext(context); screenshotScheduler.setTrackingContext(context);
+                            if (state.ownedByThisDevice && state.shift) online.confirm(state.trackingLease, statusResponse.roundTripMs,
+                                renewsTrackingLease);
+                            else { online.disconnect('No active shift'); clearQueues(); }
+                        }
+                    }
+                // The acknowledgement above already renewed the lease. A
+                // follow-up read refreshes UI state only and cannot revoke
+                // server-confirmed time.
+                } catch { /* reconciled by the next main-process heartbeat */ }
+            }
+            if (request.path === '/auth/logout') { setSessionToken(null); tracker.clearTrackingData(); }
+        }
+        return response;
+    });
+
+    // ── IPC: Secure Token Storage (safeStorage / DPAPI) ──────────────────────
+    handleTrusted('secure-store-token', async (_event, token) => {
+        try {
+            setSessionToken(token);
+            if (token && sessionAuthToken !== normalizeAuthToken(token)) return { ok: false, error: 'Session expired. Please sign in again.' };
+            const tokenPath = path.join(app.getPath('userData'), 'auth.enc');
+            if (!token || typeof token !== 'string') {
+                inMemoryTokenFallback = null;
+                if (fs.existsSync(tokenPath)) {
+                    fs.unlinkSync(tokenPath);
+                }
+                return { ok: true };
+            }
+            if (safeStorage && safeStorage.isEncryptionAvailable()) {
+                const encrypted = safeStorage.encryptString(token);
+                fs.writeFileSync(tokenPath, encrypted);
+                inMemoryTokenFallback = null;
+                return { ok: true, encrypted: true };
+            } else {
+                // Security: If OS-level encryption is unavailable, never write unencrypted tokens to disk.
+                // Keep token strictly in volatile process memory for this session only.
+                inMemoryTokenFallback = token;
+                if (fs.existsSync(tokenPath)) {
+                    fs.unlinkSync(tokenPath);
+                }
+                return { ok: true, encrypted: false, memoryOnly: true };
+            }
+        } catch (err) {
+            console.error('[SecureStorage] Failed to store token:', err);
+            return { ok: false, error: err.message };
+        }
+    });
+
+    handleTrusted('secure-get-token', async () => {
+        try {
+            const tokenPath = path.join(app.getPath('userData'), 'auth.enc');
+            if (safeStorage && safeStorage.isEncryptionAvailable()) {
+                if (!fs.existsSync(tokenPath)) return null;
+                const data = fs.readFileSync(tokenPath);
+                const token = safeStorage.decryptString(data); setSessionToken(token); return sessionAuthToken;
+            }
+            return inMemoryTokenFallback;
+        } catch (err) {
+            console.error('[SecureStorage] Failed to retrieve token:', err);
+            return null;
+        }
+    });
+
+    handleTrusted('secure-clear-token', async () => {
+        try {
+            setSessionToken(null); tracker.clearTrackingData();
+            inMemoryTokenFallback = null;
+            const tokenPath = path.join(app.getPath('userData'), 'auth.enc');
+            if (fs.existsSync(tokenPath)) {
+                fs.unlinkSync(tokenPath);
+            }
+            return { ok: true };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
     });
 
     // ── IPC: Shift Status Sync ────────────────────────────────────────────────
     // Renderer sends current shift status on every change so main.js always
     // knows whether the user is working/on_break/stopped before a suspend fires.
-    ipcMain.on('update-shift-status', (_event, payload) => {
-        const status = payload?.status;
-        const shiftId = payload?.shiftId;
-        if (!['stopped', 'working', 'on_break'].includes(status)) return;
-        if (status !== 'stopped' && (typeof shiftId !== 'string' || !/^[0-9a-f-]{36}$/i.test(shiftId))) return;
-
-        currentShiftStatus = status;
-        currentShiftId = status === 'stopped' ? null : shiftId;
-        console.log(`[Sleep] Shift status updated to '${currentShiftStatus}'`);
+    onTrusted('update-shift-status', (_event, status) => {
+        if (['stopped', 'working', 'on_break'].includes(status)) void attendance.reconcile().catch(() => {});
     });
 
     // ── IPC: Dynamic Idle Threshold (NEW — Admin Portal) ─────────────────────
     // Called by the renderer after login with the admin-set value for this user.
-    ipcMain.on('set-idle-threshold', (_event, seconds) => {
-        if (typeof seconds === 'number' && seconds >= 10) {
+    onTrusted('set-idle-threshold', (_event, seconds) => {
+        // Enforce safe bounds [60s, 3600s] to prevent evasion
+        if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 60 && seconds <= 3600) {
             IDLE_THRESHOLD_SECS = Math.round(seconds);
             console.log(`[Idle] Hardware threshold updated to ${IDLE_THRESHOLD_SECS}s`);
-            // Hardware threshold change does NOT restart WFH monitor —
-            // screen idle threshold is a separate independent value.
+        } else {
+            console.warn(`[Idle] Rejected out-of-bounds hardware idle threshold: ${seconds}s`);
         }
     });
 
-    ipcMain.on('set-wfh-screen-idle-threshold', (_event, seconds) => {
-        if (typeof seconds === 'number' && seconds >= 10) {
+    onTrusted('set-wfh-screen-idle-threshold', (_event, seconds) => {
+        // Enforce safe bounds [30s, 3600s]
+        if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 30 && seconds <= 3600) {
             const newThreshold = Math.round(seconds);
             const changed = newThreshold !== WFH_SCREEN_IDLE_THRESHOLD_SECS;
             WFH_SCREEN_IDLE_THRESHOLD_SECS = newThreshold;
@@ -604,16 +767,22 @@ app.whenReady().then(() => {
                     () => { console.log('[WFH] Screen became active — poller will re-evaluate'); }
                 );
             }
+        } else {
+            console.warn(`[WFH] Rejected out-of-bounds screen idle threshold: ${seconds}s`);
         }
     });
 
-    ipcMain.on('set-screenshot-interval', (_event, seconds) => {
-        if (typeof seconds === 'number' && seconds >= 60 && seconds <= 3600) {
+    onTrusted('set-screenshot-interval', (_event, seconds) => {
+        // Enforce safe bounds [60s, 3600s]
+        if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 60 && seconds <= 3600) {
             screenshotScheduler.setIntervalSecs(Math.round(seconds));
+        } else {
+            console.warn(`[Screenshot] Rejected out-of-bounds interval: ${seconds}s`);
         }
     });
 
-    ipcMain.on('set-wfh-config', (_event, config) => {
+
+    onTrusted('set-wfh-config', (_event, config) => {
         if (config && typeof config === 'object') {
             const newIntervalMs = config.intervalMs ?? wfhConfig.intervalMs;
             const newWidth      = config.width      ?? wfhConfig.width;
@@ -640,7 +809,7 @@ app.whenReady().then(() => {
     // Renderer sends this after every status poll with the active shift's
     // workLocation. 'wfh' activates the screen-change idle monitor; 'office'
     // (or no active shift) leaves the existing input-only monitor in charge.
-    ipcMain.on('set-work-location', (_event, location) => {
+    onTrusted('set-work-location', (_event, location) => {
         const wfh = location === 'wfh';
         if (wfh === isWfhMode) return; // no change — nothing to do
 
@@ -656,39 +825,93 @@ app.whenReady().then(() => {
             );
         } else {
             wfhScreenMonitor.stop();
-            // If we were in a WFH-combined idle and switch back to office mode,
-            // reset idle state cleanly so the poller re-evaluates from scratch.
-            if (isUserIdle && mainWindow && !mainWindow.isDestroyed()) {
-                isUserIdle = false;
-                mainWindow.webContents.send('idle-end');
-            }
         }
+
+        // Apply the new mode's idle rules before reconciling attendance. The
+        // renderer, coordinator and capture pause state must change together.
+        refreshIdleState();
+        void attendance.reconcile().catch(() => {});
     });
+
+    // ── Helper: External URL Security Allowlist ─────────────────────────────
+    function isAllowedExternalUrl(candidateUrl) {
+        if (typeof candidateUrl !== 'string' || !candidateUrl.trim()) return false;
+        try {
+            const parsed = new URL(candidateUrl.trim());
+            // Enforce strict HTTP/HTTPS protocol
+            if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+                return false;
+            }
+
+            // Extract trusted hostnames
+            const webBaseUrl = new URL(WEB_BASE);
+            const allowedHostnames = new Set([
+                webBaseUrl.hostname.toLowerCase(),
+                'hrms.yoforex.net',
+                'emptrakr.com',
+                'www.emptrakr.com',
+            ]);
+
+            if (isDev) {
+                allowedHostnames.add('localhost');
+                allowedHostnames.add('127.0.0.1');
+            }
+
+            const candidateHostname = parsed.hostname.toLowerCase();
+            if (!allowedHostnames.has(candidateHostname)) {
+                console.warn('[Security] Blocked external URL with unapproved hostname:', candidateHostname);
+                return false;
+            }
+
+            // Reject non-standard ports in production
+            if (!isDev && parsed.port && parsed.port !== '443' && parsed.port !== '80') {
+                console.warn('[Security] Blocked external URL with non-standard port:', parsed.port);
+                return false;
+            }
+
+            return true;
+        } catch (err) {
+            console.warn('[Security] Rejected malformed external URL:', err && err.message ? err.message : err);
+            return false;
+        }
+    }
 
     // ── IPC: Open Login in System Browser (Device Flow) ─────────────────────
-    // Renderer sends the one-time deviceCode it generated.
-    // We embed it as ?desktopCode=<uuid> so the website POSTs the session
-    // to the backend by that code. The renderer polls the backend every 2s.
-    ipcMain.on('open-login', (_event, deviceCode) => {
-        const loginUrl = new URL('/login', WEB_BASE);
-        loginUrl.searchParams.set('desktopCode', String(deviceCode));
-        loginUrl.searchParams.set('returnTo', 'desktop');
-        shell.openExternal(loginUrl.toString());
-        console.log('[Auth] Opened browser login with deviceCode:', deviceCode);
-    });
+    // Renderer may send either:
+    //   - a one-time deviceCode (legacy), or
+    //   - a full login URL built from its own WEB_BASE (preferred — matches UI label)
+    // Website POSTs the session to the backend by that code; desktop polls every 2s.
+    onTrusted('open-login', (_event, payload) => {
+        let loginUrlString;
+        if (typeof payload === 'string' && /^https?:\/\//i.test(payload)) {
+            if (!isAllowedExternalUrl(payload)) {
+                console.warn('[Security] Blocked open-login URL outside allowlist:', payload);
+                return;
+            }
+            loginUrlString = payload;
+        } else {
+            const loginUrl = new URL('/login', WEB_BASE);
+            loginUrl.searchParams.set('desktopCode', String(payload ?? ''));
+            loginUrl.searchParams.set('returnTo', 'desktop');
+            loginUrlString = loginUrl.toString();
+        }
 
-    ipcMain.on('open-dashboard', (_event, handoffCode) => {
-        try {
-            // The renderer obtains this short-lived code from the authenticated
-            // backend. Main validates it before opening the browser URL.
-            void shell.openExternal(buildDashboardHandoffUrl(WEB_BASE, handoffCode));
-        } catch {
-            // Do not log one-time handoff values or URLs.
-            console.warn('[Auth] Refused an invalid dashboard handoff request');
+        if (isAllowedExternalUrl(loginUrlString)) {
+            shell.openExternal(loginUrlString);
+            console.log('[Auth] Opened browser login:', loginUrlString);
+        } else {
+            console.warn('[Security] Blocked open-login URL outside allowlist:', loginUrlString);
         }
     });
 
-    ipcMain.on('restart-app', () => {
+    handleTrusted('open-dashboard', () => require('./dashboardHandoff.cjs').openEmployeeDashboard({
+        getToken: () => sessionAuthToken,
+        requestApi: (token, request) => require('./apiBridge.cjs').requestApi(API_BASE, token, request),
+        webBase: WEB_BASE, allowed: isAllowedExternalUrl,
+        openExternal: url => shell.openExternal(url),
+    }));
+
+    onTrusted('restart-app', () => {
         if (currentShiftStatus !== 'stopped') {
             sendOtaStatus('Clock out before installing update.');
             return;
@@ -768,44 +991,21 @@ app.whenReady().then(() => {
     // We call the API from main.js (not the renderer) because the network
     // is still available at this point, whereas the renderer's async HTTP
     // call often fails after the network drops during suspend.
-    powerMonitor.on('suspend', async () => {
-        console.log('[Sleep] System suspending');
-
-        // Only auto-break if the user is actively working and below limit.
-        // Break limit check is skipped here (backend enforces it anyway and
-        // will return 400 if exceeded — we check the result).
-        if (currentShiftStatus !== 'working') {
-            console.log(`[Sleep] Status is '${currentShiftStatus}' — skipping sleep break`);
-            return;
-        }
-
-        const result = await sendBreakCommand('start', 'sleep', 'suspend');
-        sleepBreakStarted = !!(result && result.break && result.break.source === 'sleep');
-
-        // Also tell the renderer so the UI reflects the break immediately
-        if (sleepBreakStarted && mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('sleep-break-started');
-        }
+    powerMonitor.on('suspend', () => {
+        attendance.setSensors({ sleeping: true });
+        tracker.setPaused(true); screenshotScheduler.setPaused(true);
+        void attendance.reconcile().catch(() => {});
     });
-
-    powerMonitor.on('resume', async () => {
-        console.log('[Sleep] System resumed from sleep');
-
-        if (!sleepBreakStarted) {
-            console.log('[Sleep] No sleep break was started — nothing to end');
-            return;
-        }
-
-        sleepBreakStarted = false;
-        const result = await sendBreakCommand('end', 'sleep', 'resume');
-        const ok = !!result;
-
-        // Tell renderer to re-sync status from backend
-        if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('sleep-break-ended', ok);
-        }
+    powerMonitor.on('resume', () => {
+        attendance.setSensors({ sleeping: false });
+        tracker.setPaused(isScreenLocked || isUserIdle); screenshotScheduler.setPaused(isScreenLocked || isUserIdle);
+        void attendance.reconcile().catch(() => {});
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sleep-break-ended', true);
     });
-
+    isScreenLocked = powerMonitor.getSystemIdleState(IDLE_THRESHOLD_SECS) === 'locked';
+    attendance.setSensors({ locked: isScreenLocked });
+    tracker.setPaused(isScreenLocked); screenshotScheduler.setPaused(isScreenLocked);
+    setInterval(() => { void attendance.reconcile().catch(() => {}); }, 3000);
 
     // On Windows/Linux cold-start via protocol, deep link is passed in argv.
     const startupDeepLink = extractDeepLink(process.argv);
