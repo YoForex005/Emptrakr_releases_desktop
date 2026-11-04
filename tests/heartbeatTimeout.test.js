@@ -5,9 +5,10 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
 
-test('desktop resyncs after a rejected heartbeat, shows auto-checkout and waits for explicit clock-in', async () => {
+test('desktop reflects a main-process heartbeat auto-checkout on the next status sync without clocking in', async () => {
     const slots = [], effects = [];
-    let cursor = 0, clockIns = 0, stopped = false;
+    const intervals = new Map();
+    let cursor = 0, clockIns = 0, stopped = false, nextInterval = 0;
     const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
     const react = {
         useState(initial) { const i = cursor++; slots[i] ??= { value: typeof initial === 'function' ? initial() : initial };
@@ -22,7 +23,6 @@ test('desktop resyncs after a rejected heartbeat, shows auto-checkout and waits 
         async getStatus() { return { status: stopped ? 'stopped' : 'working', timezone: 'UTC',
             shift: stopped ? null : { id: 'expired', startTime: endedAt, breaks: [] },
             autoCheckout: stopped ? { shiftId: 'expired', endedAt, reason: 'Heartbeat timeout' } : null }; },
-        async sendHeartbeat() { stopped = true; throw new Error('Intended shift expired'); },
         async getHistory() { return []; }, async getTodayIdleSecs() { return 0; },
         async startShift() { clockIns++; },
     };
@@ -31,7 +31,10 @@ test('desktop resyncs after a rejected heartbeat, shows auto-checkout and waits 
         const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
         const mod = { exports: {} };
         new Function('require', 'module', 'exports', 'window', 'clearInterval', 'console', js)(
-            name => imports[name] || require(name), mod, mod.exports, { setInterval: () => 1, clearInterval() {} }, () => {}, { log() {}, warn() {}, error() {} });
+            name => imports[name] || require(name), mod, mod.exports, {
+                setInterval(callback, delay) { const id = ++nextInterval; intervals.set(id, { callback, delay }); return id; },
+                clearInterval(id) { intervals.delete(id); },
+            }, id => intervals.delete(id), { log() {}, warn() {}, error() {} });
         return mod.exports;
     }
     const timezone = load('../src/timezones.ts', {});
@@ -40,7 +43,11 @@ test('desktop resyncs after a rejected heartbeat, shows auto-checkout and waits 
     const flush = () => new Promise(resolve => setImmediate(resolve));
     try {
         render(); await flush();
-        assert.equal(render().status, 'working'); await flush();
+        assert.equal(render().status, 'working');
+        stopped = true;
+        const statusPoll = [...intervals.values()].find(interval => interval.delay === 30_000);
+        assert.ok(statusPoll, 'the renderer must continue syncing authoritative status');
+        await statusPoll.callback(); await flush();
         const result = render();
         assert.equal(result.status, 'stopped');
         assert.equal(result.autoCheckout.endedAt, endedAt);

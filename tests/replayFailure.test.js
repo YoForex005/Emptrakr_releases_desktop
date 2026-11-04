@@ -9,7 +9,7 @@ const { DeliveryQueue, queueForToken, removeLegacyTelemetry } = require('../elec
 const online = require('../electron/tracking/onlineState.cjs');
 const confirm = () => online.confirm({ supported: true, serverNow: new Date().toISOString(), onlineUntil: new Date(Date.now() + 30000).toISOString() });
 const token = 'header.' + Buffer.from(JSON.stringify({ userId: 'test', deviceId: 'test' })).toString('base64url') + '.signature';
-test('telemetry is volatile and a failed connection cannot replay data after reconnect', async () => {
+test('telemetry retries only during a confirmed online lease and never persists after disconnect', async () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'emptrakr-online-'));
     try {
         confirm();
@@ -18,7 +18,10 @@ test('telemetry is volatile and a failed connection cannot replay data after rec
         assert.equal(new DeliveryQueue({ file: path.join(directory, 'queue.enc') }).items.length, 0);
         assert.deepEqual(readdirSync(directory), []);
         await queue.flush(async () => { throw new Error('Connection lost after server commit'); });
-        assert.equal(online.isOnline(), false);
+        assert.equal(online.isOnline(), true);
+        assert.equal(queue.items.length, 1);
+        assert.equal(queue.items[0].eventId, 'event');
+        online.disconnect('Online tracking confirmation expired');
         assert.equal(queue.items.length, 0);
         queue.enqueue({ eventId: 'offline' });
         assert.equal(queue.items.length, 0);
