@@ -1536,7 +1536,7 @@ body {
 .titlebar__right, .titlebar__controls { gap: 4px !important; }
 .titlebar__icon-btn { width: 20px; height: 20px; }
 .layout { height: calc(100vh - 34px); }
-.main { padding: 10px 14px 78px; }
+.main { padding: 10px 14px; }
 
 .tracker-greeting { margin: 0 2px 12px; }
 .tracker-greeting h1 { color: #102a4c; font-size: 17px; letter-spacing: -0.45px; line-height: 1.1; }
@@ -1568,6 +1568,7 @@ body {
 .secondary-action__arrow { font-size: 24px; }
 
 .version-tag {
+  position: static;
   right: 0;
   bottom: 51px;
   left: 0;
@@ -1583,4 +1584,5 @@ body {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0;
+  margin-top: 2px;
 }
